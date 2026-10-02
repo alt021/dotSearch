@@ -1,4 +1,4 @@
-import type { Feature } from '../types/feature.js';
+import type { EngineAdapter } from '../types/engine.js';
 import { text } from '../core/dom.js';
 
 /**
