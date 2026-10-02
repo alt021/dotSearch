@@ -35,10 +35,14 @@ export const MATCHES_FUTURE = [
   '// @match        *://www.baidu.com/s*',
 ];
 
+/** 本地开发服务地址，需与 scripts/serve.mjs 的端口一致 */
+export const DEV_SERVER = 'http://127.0.0.1:8777';
+
 export const META = {
   namespace: 'https://github.com/alt021/search-enhance',
   homepage: 'https://github.com/alt021/search-enhance',
   supportURL: 'https://github.com/alt021/search-enhance/issues',
+  /** 正式发布地址（推到 GitHub 后生效） */
   downloadURL:
     'https://raw.githubusercontent.com/alt021/search-enhance/main/dist/search-enhance.user.js',
   icon: 'https://www.bing.com/sa/simg/bing_p_rr_teal_min.ico',
@@ -46,19 +50,36 @@ export const META = {
   noframes: true,
 } as const;
 
+export interface MetaOptions {
+  version: string;
+  description: string;
+  /**
+   * 开发模式：把 @updateURL / @downloadURL 指向本机服务。
+   * 这样 Tampermonkey 装上后能自动跟随本地重建，且不会去请求尚未存在的 GitHub 地址。
+   */
+  dev?: boolean;
+}
+
 /** 生成注入到产物顶部的 UserScript 头部 */
-export function buildMetaBlock(pkg: { version: string; description: string }): string {
+export function buildMetaBlock(pkg: MetaOptions): string {
+  // 开发版附加 -dev 后缀，便于与正式版区分并触发 Tampermonkey 更新
+  const version = pkg.dev ? `${pkg.version}-dev` : pkg.version;
+
   return [
     '// ==UserScript==',
-    '// @name         Search Enhance',
-    '// @name:zh-CN   搜索体验增强',
-    `// @version      ${pkg.version}`,
+    `// @name         Search Enhance${pkg.dev ? ' (Dev)' : ''}`,
+    '// @name:zh-CN   搜索体验增强' + (pkg.dev ? '（开发版）' : ''),
+    `// @version      ${version}`,
     `// @description  ${pkg.description}`,
     '// @author       AmeXE2',
     `// @namespace    ${META.namespace}`,
     `// @homepageURL  ${META.homepage}`,
     `// @supportURL   ${META.supportURL}`,
-    `// @downloadURL  ${META.downloadURL}`,
+    // 开发模式下以本机服务为准，避免 Tampermonkey 校验 404 的远端地址
+    `// @downloadURL  ${pkg.dev ? `${DEV_SERVER}/search-enhance.user.js` : META.downloadURL}`,
+    ...(pkg.dev
+      ? [`// @updateURL    ${DEV_SERVER}/search-enhance.user.js`]
+      : [`// @updateURL    ${META.downloadURL}`]),
     `// @icon         ${META.icon}`,
     ...MATCHES_ACTIVE,
     ...GRANTS.map((g) => `// @grant        ${g}`),

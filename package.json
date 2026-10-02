@@ -9,7 +9,9 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "watch": "node scripts/build.mjs --watch",
+    "build:dev": "node scripts/build.mjs --dev",
+    "watch": "node scripts/build.mjs --watch --dev",
+    "serve": "node scripts/serve.mjs",
     "check": "tsc --noEmit",
     "clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
     "verify": "npm run check && npm run build"

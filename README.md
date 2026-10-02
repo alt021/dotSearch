@@ -12,13 +12,19 @@
 
 ```bash
 npm install       # 安装依赖
-npm run watch     # 监听 src/ 变更，自动重建
-npm run build     # 单次构建
+npm run watch     # 监听 src/ 变更，自动重建（开发版）
+npm run serve     # 起本地服务，供 Tampermonkey 以 URL 安装
+npm run build     # 单次构建（正式版）
 npm run check     # 仅做 TypeScript 类型检查
 npm run verify    # 类型检查 + 构建
 ```
 
-构建产物 `dist/search-enhance.user.js` 已进 `.gitignore`，属于生成物。
+构建产物已进 `.gitignore`，属于生成物：
+
+| 命令 | 产物 | 用途 |
+| --- | --- | --- |
+| `npm run build` | `dist/search-enhance.user.js` | 正式版，`@updateURL` 指向 GitHub raw |
+| `npm run watch` | `dist/dev/search-enhance.user.js` | 开发版，`@updateURL` 指向本机服务 |
 
 > **Windows 装依赖提示**：新版 npm 会拦截 esbuild 的 postinstall（`npm warn install-scripts`），
 > 二进制可能没落地。若 `npm run build` 报找不到 esbuild，用系统 Node 补跑一次：
@@ -28,13 +34,90 @@ npm run verify    # 类型检查 + 构建
 > ./node_modules/.bin/esbuild --version   # 应输出版本号
 > ```
 
-### 安装到浏览器
+---
 
-1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/) 或 Violentmonkey。
-2. 打开扩展面板 → 添加新脚本 → 把 `dist/search-enhance.user.js` 全文粘贴进去 → 保存。
-3. 访问 <https://www.bing.com/search?q=test> 查看效果。
+## 安装到 Tampermonkey
 
-开发时也可以开启 `file://` 直读，把 `meta.ts` 里的 `@match` 换成你的本地文件路径。
+推荐用**方式 A（URL 安装）**，因为改完代码只需刷新页面就能生效，不用反复复制粘贴。
+
+### 方式 A：本地服务安装（推荐，开发用）
+
+需要两个终端。
+
+```bash
+# 终端 1 —— 起服务
+npm run build:dev
+npm run serve
+# 输出：[serve] 安装地址：http://127.0.0.1:8777/search-enhance.user.js
+
+# 终端 2 —— 监听重建（改完代码自动生效）
+npm run watch
+```
+
+然后：
+
+1. 浏览器里打开 <http://127.0.0.1:8777/search-enhance.user.js>
+2. Tampermonkey 会弹出安装页 → 点 **安装**
+3. 打开 <https://www.bing.com/search?q=test>，广告位应已隐藏
+
+之后每次改 `src/` 的代码，`npm run watch` 会自动重建，`dist/dev` 已设 `Cache-Control: no-store`，
+**刷新 Bing 页面即可看到新效果**。脚本名带 `(Dev)` 后缀，可与正式版共存。
+
+> 服务默认只监听 `127.0.0.1:8777`，不对外网暴露。换端口用 `npm run serve -- --port 9000`
+> （同时要改 `src/meta.ts` 的 `DEV_SERVER`）。
+
+### 方式 B：手动粘贴（一次性安装）
+
+1. 跑 `npm run build`
+2. Tampermonkey 图标 → **添加新脚本**（或新建空脚本后全选删除默认内容）
+3. 把 `dist/search-enhance.user.js` 全文粘贴进去
+4. `Ctrl+S` 保存
+
+缺点：每次改代码都要重新复制一遍。
+
+### 方式 C：正式发布后自动更新
+
+推到 GitHub 后，`npm run build` 产物的 `@updateURL` 指向
+`raw.githubusercontent.com/alt021/...`，Tampermonkey 会自动检查并升级。
+用户侧同样只需打开那个 URL 首次安装。
+
+---
+
+## 验证是否生效
+
+装好后按以下顺序检查：
+
+1. 打开 <https://www.bing.com/search?q=test>，广告位应消失
+2. 点扩展图标 → 菜单里应出现 `☑ 隐藏广告位`、`☑ 结果键盘导航`
+3. 在搜索结果页按 `j` / `k`，当前项应有蓝色高亮并滚动到视野中央
+4. 换一个搜索词，**不应刷新页面**，高亮功能仍可用（验证 SPA 导航监听）
+
+排查：菜单里点 `🐛 切换调试日志` 打开日志，再刷新页面，控制台会输出 `[search-enhance]` 开头的诊断信息。
+
+---
+
+## 常见问题
+
+**脚本没反应？**
+
+- 确认当前 URL 匹配 `@match *://*.bing.com/search*`，且是**搜索结果页**（路径必须是 `/search`）
+- Tampermonkey 图标里确认脚本处于启用状态
+- 打开调试日志看控制台输出
+
+**菜单是英文 / 功能没出现？**
+
+- GM 菜单与设置依赖 `@grant`，浏览器若禁用了用户脚本权限会退化
+- 菜单项只在脚本成功匹配到引擎后才注册
+
+**改了代码没变化？**
+
+- 确认 `npm run watch` 正在运行
+- 强制刷新（`Ctrl+Shift+R`）排除浏览器缓存
+- 确认装的是 Dev 版而非正式版（看脚本名有没有 `(Dev)`）
+
+**esbuild 报 EBUSY / 找不到二进制？**
+
+见上文「Windows 装依赖提示」。本质是托管版 `node.exe` 被锁，用系统 Node 补跑 `install.js` 即可。
 
 ---
 
@@ -63,6 +146,10 @@ src/
 │   ├── hide-ads.ts          隐藏广告位
 │   └── result-navigation.ts j / k 键盘导航 + 链接新标签打开
 └── styles/main.css
+
+scripts/
+├── build.mjs                 esbuild 打包（支持 --dev / --watch / --minify）
+└── serve.mjs                 本地静态服务，供 Tampermonkey 以 URL 安装
 ```
 
 ---
