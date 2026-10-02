@@ -1,0 +1,21 @@
+{
+  "name": "search-enhance",
+  "version": "0.1.0",
+  "description": "增强搜索引擎用户体验的 UserScript（当前以 Bing 为主，逐步扩展 Google / 百度）",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "watch": "node scripts/build.mjs --watch",
+    "check": "tsc --noEmit",
+    "clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
+    "verify": "npm run check && npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

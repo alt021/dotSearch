@@ -1,0 +1,10 @@
+# 统一 LF，避免 Windows 下的换行符反复污染 diff
+* text=auto eol=lf
+
+*.ts   text diff=typescript
+*.mjs  text
+*.css  text
+*.md   text
+
+# 构建产物固定为 LF + UTF-8
+dist/*.user.js text eol=lf
