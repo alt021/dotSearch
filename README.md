@@ -20,6 +20,14 @@ npm run verify    # 类型检查 + 构建
 
 构建产物 `dist/search-enhance.user.js` 已进 `.gitignore`，属于生成物。
 
+> **Windows 装依赖提示**：新版 npm 会拦截 esbuild 的 postinstall（`npm warn install-scripts`），
+> 二进制可能没落地。若 `npm run build` 报找不到 esbuild，用系统 Node 补跑一次：
+>
+> ```bash
+> "C:/Program Files/nodejs/node.exe" node_modules/esbuild/install.js
+> ./node_modules/.bin/esbuild --version   # 应输出版本号
+> ```
+
 ### 安装到浏览器
 
 1. 安装浏览器扩展 [Tampermonkey](https://www.tampermonkey.net/) 或 Violentmonkey。
