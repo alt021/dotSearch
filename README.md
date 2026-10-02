@@ -1,6 +1,9 @@
 # Search Enhance
 
-一个增强搜索引擎使用体验的 [UserScript](https://www.tampermonkey.net/) 项目。
+一个**重写搜索引擎结果页**的 [UserScript](https://www.tampermonkey.net/) 项目。
+
+不是给原站打补丁，而是把结果页整个换掉：用统一结构重建结果列表，
+再在此之上做完整的视觉风格化。
 
 - **当前主力引擎**：Bing（`www.bing.com` / `cn.bing.com` 搜索结果页）
 - **预留扩展**：Google、百度（适配器已写好骨架，尚未接入调度）
@@ -87,10 +90,11 @@ npm run watch
 
 装好后按以下顺序检查：
 
-1. 打开 <https://www.bing.com/search?q=test>，广告位应消失
-2. 点扩展图标 → 菜单里应出现 `☑ 隐藏广告位`、`☑ 结果键盘导航`
-3. 在搜索结果页按 `j` / `k`，当前项应有蓝色高亮并滚动到视野中央
-4. 换一个搜索词，**不应刷新页面**，高亮功能仍可用（验证 SPA 导航监听）
+1. 打开 <https://www.bing.com/search?q=test>，页面应只剩搜索框与结果列表
+2. 顶栏、页脚、侧栏、广告、Copilot 面板应全部消失
+3. 点扩展图标 → 菜单里应出现 `☑ 重写结果页`
+4. 结果链接应指向**真实站点地址**（而非 `bing.com/ck/a` 中转），点击在新标签打开
+5. 页面 DOM 应大幅缩减（实测 378 → 56 节点）
 
 排查：菜单里点 `🐛 切换调试日志` 打开日志，再刷新页面，控制台会输出 `[search-enhance]` 开头的诊断信息。
 
@@ -101,6 +105,7 @@ npm run watch
 **脚本没反应？**
 
 - 确认当前 URL 匹配 `@match *://*.bing.com/search*`，且是**搜索结果页**（路径必须是 `/search`）
+- 若结果区正常但样式全无，说明 `src/styles/base.css` 未注入
 - Tampermonkey 图标里确认脚本处于启用状态
 - 打开调试日志看控制台输出
 
@@ -143,9 +148,8 @@ src/
 │   └── baidu.ts             ⏸ 预留
 ├── features/
 │   ├── index.ts             功能注册表（顺序即执行顺序）
-│   ├── hide-ads.ts          隐藏广告位
-│   └── result-navigation.ts j / k 键盘导航 + 链接新标签打开
-└── styles/main.css
+│   └── strip-to-results.ts  结果页重写（当前唯一功能）
+└── styles/base.css           重建后的基础样式
 
 scripts/
 ├── build.mjs                 esbuild 打包（支持 --dev / --watch / --minify）
@@ -196,12 +200,31 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
 
 ---
 
-## 已实现功能
+## 当前进度
 
-| 功能 | ID | 说明 |
-| --- | --- | --- |
-| 隐藏广告位 | `hide-ads` | 折叠 Bing 结果页广告模块 |
-| 结果键盘导航 | `result-navigation` | `j` / `k` 移动焦点，`Enter` 打开；结果链接默认新标签页 |
+### 已实现：结果页重写（`strip-to-results`）
+
+把 Bing 结果页替换为「搜索框 + 干净结果列表」：
+
+- 清空原站全部内容与样式（顶栏、页脚、侧栏、广告、Copilot 面板、浮层）
+- 用 `EngineAdapter` 解析结果为结构化数据，**不复用任何原站节点**
+- 从零构建 `se-*` 结构：标题 / 来源 URL / 摘要三层
+- 解析 Bing 跳转链接 `bing.com/ck/a`，还原为真实地址
+- 保留分页与顶部直答区（后期统一重写）
+- 补一个搜索框（原站搜索框随重写移除，详见下方「已知取舍」）
+
+实测（真实 Bing 快照 + 本机 Chromium）：DOM **378 → 56 节点**，10 条结果全保留，
+原站元素与 `li.b_algo` 残留均为 0，跳转链接残留 0。
+
+### 已知取舍
+
+原站搜索框位于 `#b_header`，会随重写一起消失，其 `pushState` 换词机制也随之失效。
+因此重建了搜索框并改用 `location.assign` 整页跳转——每次搜索都会整页加载，
+牺牲了 SPA 的即时性，换来脚本能稳定重新初始化。
+
+### 下一步
+
+在当前干净基线上做视觉风格化：结果卡片、来源徽标、摘要排版、深色模式适配等。
 
 ---
 
