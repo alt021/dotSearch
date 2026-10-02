@@ -13,6 +13,7 @@
     "watch": "node scripts/build.mjs --watch --dev",
     "serve": "node scripts/serve.mjs",
     "check": "tsc --noEmit",
+    "verify:strip": "node scripts/build.mjs --dev && node scripts/verify-strip.mjs",
     "clean": "node -e \"import('node:fs').then(fs=>fs.rmSync('dist',{recursive:true,force:true}))\"",
     "verify": "npm run check && npm run build"
   },

@@ -14,6 +14,7 @@ export const baidu: EngineAdapter = {
 
   resultContainerSelector: '#content_left',
   resultItemSelector: '#content_left .result, #content_left .c-container',
+  searchForm: { path: '/s', param: 'wd' },
 
   isSearchPage(url) {
     return url.hostname === 'www.baidu.com' && (url.pathname === '/s' || url.pathname === '/baidu');
@@ -36,6 +37,8 @@ export const baidu: EngineAdapter = {
         link,
         title: text(node.querySelector('h3')),
         snippet: text(node.querySelector('.c-abstract, .content-right_2s-H4')),
+        displayUrl: text(node.querySelector('.c-showurl, .siteLink_9TPP3')),
+        url: link?.href ?? null,
         index,
       };
     });

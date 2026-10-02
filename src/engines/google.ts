@@ -15,6 +15,7 @@ export const google: EngineAdapter = {
 
   resultContainerSelector: '#search',
   resultItemSelector: '#search .g, #rso > div.g',
+  searchForm: { path: '/search', param: 'q' },
 
   isSearchPage(url) {
     return this.hostnames.includes(url.hostname) && url.pathname === '/search';
@@ -37,6 +38,8 @@ export const google: EngineAdapter = {
         link,
         title: text(node.querySelector('h3')),
         snippet: text(node.querySelector('.VwiC3b, [data-sncf]')),
+        displayUrl: text(node.querySelector('cite, .MUxGbd')),
+        url: link?.href ?? null,
         index,
       };
     });

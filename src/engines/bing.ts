@@ -7,15 +7,20 @@ const INJECT_FLAG = '__searchEnhanceBing__';
 /**
  * Bing 适配器
  *
- * DOM 结构基于 2026 年 Bing 桌面版结果页：
- *   #b_results            结果容器
- *   li.b_algo             单条自然结果
- *   h2 a                  标题链接
- *   .b_caption p          摘要
- *   li.b_ad / .b_adSlug   广告与推广标记
+ * 以下结构基于 2026-10 抓取的真实结果页校准（zh-CN 桌面版）：
+ *   li.b_algo                        单条自然结果
+ *     a.tilk                         头部可点区（内含站点图标与显示 URL）
+ *       div.b_tpcn                   站点图标
+ *       div.tpmeta > div.b_attribution > cite   显示的 URL 文本
+ *     h2 > a > strong                标题（真正的链接）
+ *     div.b_caption > p.b_lineclamp2 摘要
  *
  * 注意：Bing 改版频繁。选择器失效时优先只改这里，
  * 不要把引擎专属选择器散落到 features/ 中。
+ *
+ * 关于跳转链接：Bing 的 href 均为 `bing.com/ck/a?...` 形式的跳转地址，
+ * 真实目标地址在 `u=` 查询参数里（base64 + 补位字符），
+ * 解析方式见 decodeBingRedirectUrl。
  */
 export const bing: EngineAdapter = {
   id: 'bing',
@@ -24,6 +29,7 @@ export const bing: EngineAdapter = {
 
   resultContainerSelector: '#b_results',
   resultItemSelector: 'li.b_algo',
+  searchForm: { path: '/search', param: 'q' },
 
   isSearchPage(url) {
     return HOSTS.includes(url.hostname) && url.pathname === '/search';
@@ -40,14 +46,20 @@ export const bing: EngineAdapter = {
   extractResults(root) {
     const nodes = Array.from(root.querySelectorAll<HTMLElement>('li.b_algo'));
     return nodes.map((node, index) => {
-      const link = node.querySelector<HTMLAnchorElement>('h2 a[href]');
-      const snippetEl = node.querySelector('.b_caption p, .b_lineclamp2, .b_algoSlug');
+      // 标题链接在 h2 内；a.tilk 是头部整体可点区，仅作兜底
+      const titleLink = node.querySelector<HTMLAnchorElement>('h2 a[href]');
+      const clickable = node.querySelector<HTMLAnchorElement>('a.tilk[href]');
+      const rawHref = (titleLink ?? clickable)?.href ?? null;
 
       return {
         node,
-        link,
+        link: titleLink ?? clickable,
         title: text(node.querySelector('h2')),
-        snippet: text(snippetEl),
+        snippet: text(node.querySelector('.b_caption p, p.b_lineclamp2, .b_lineclamp2')),
+        // cite 里是 Bing 展示用的可读 URL，比跳转链接更适合作为来源显示
+        displayUrl: text(node.querySelector('div.b_attribution cite, cite')),
+        // 解析出真实目标地址，供后续跳转/去广告逻辑使用
+        url: rawHref ? decodeBingRedirectUrl(rawHref) ?? rawHref : null,
         index,
       };
     });
@@ -61,3 +73,29 @@ export const bing: EngineAdapter = {
     (doc as unknown as Record<string, unknown>)[INJECT_FLAG] = true;
   },
 };
+
+/**
+ * 解析 Bing 跳转链接 `bing.com/ck/a?...&u=a1<base64url>`，
+ * 取出真实目标地址。解析失败时返回 null，由调用方回退到原始 href。
+ */
+function decodeBingRedirectUrl(href: string): string | null {
+  try {
+    const url = new URL(href, 'https://www.bing.com');
+    const raw = url.searchParams.get('u');
+    if (!raw) return null;
+
+    // Bing 用 'a1' 作为 base64url 的前缀标记
+    const b64 = raw.startsWith('a1') ? raw.slice(2) : raw;
+    // base64url → base64：补齐 padding 并还原 URL 安全字符
+    const normalized = b64.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = atob(padded);
+    // 解出的是 UTF-8 字节，需按 UTF-8 还原为字符串
+    const text = new TextDecoder('utf-8').decode(
+      Uint8Array.from(decoded, (ch) => ch.charCodeAt(0)),
+    );
+    return /^https?:\/\//i.test(text) ? text : null;
+  } catch {
+    return null;
+  }
+}

@@ -7,12 +7,16 @@ export type EngineId = (typeof ENGINE_IDS)[number];
 export interface SearchResult {
   /** 结果节点本身 */
   node: HTMLElement;
-  /** 标题链接 */
+  /** 标题链接（可能是引擎的跳转地址） */
   link: HTMLAnchorElement | null;
   /** 标题文本 */
   title: string;
   /** 摘要文本 */
   snippet: string;
+  /** 引擎展示用的可读来源 URL（便于展示，不用于跳转） */
+  displayUrl: string;
+  /** 解析后的真实目标地址；解析失败时回退为原始 href */
+  url: string | null;
   /** 结果在页面中的序号（0 起） */
   index: number;
 }
@@ -35,6 +39,9 @@ export interface EngineAdapter {
 
   /** 从 URL 中取出搜索关键词；非搜索页返回 null */
   parseQuery(url: URL): string | null;
+
+  /** 搜索页的路径与查询参数名，用于重建搜索框（例：{ path: '/search', param: 'q' }） */
+  readonly searchForm: { path: string; param: string };
 
   /** 结果列表容器选择器，waitFor 的观察目标 */
   readonly resultContainerSelector: string;

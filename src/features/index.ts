@@ -1,12 +1,13 @@
 import type { Feature } from '../types/feature.js';
-import { hideAds } from './hide-ads.js';
-import { resultNavigation } from './result-navigation.js';
+import { stripToResults } from './strip-to-results.js';
 
 /**
  * 功能注册表
- * 新增功能：写好 Feature 实现后在这里登记即可。
+ *
+ * 项目定位是「重写搜索结果页」，因此首个功能就是精简模式本身，
+ * 后续的视觉重设计、交互增强等能力依次追加到这里。
  * 顺序即执行顺序。
  */
-export const ALL_FEATURES: Feature[] = [hideAds, resultNavigation];
+export const ALL_FEATURES: Feature[] = [stripToResults];
 
-export { hideAds, resultNavigation };
+export { stripToResults };
