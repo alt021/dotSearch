@@ -101,7 +101,17 @@ export const stripToResults: Feature = {
 
     if (results.length > 0) {
       main.appendChild(buildResultList(results));
-      if (pages.length > 0) main.appendChild(buildPagination(pages));
+      if (pages.length > 0) {
+        main.appendChild(buildPagination(pages));
+      } else {
+        // 分页缺失是最常见的跨浏览器问题，此处显式告警而非静默跳过
+        log.warn(
+          '[分页缺失] 未提取到分页。容器探测：' +
+            `.b_pag=${document.querySelectorAll('.b_pag').length} ` +
+            `.sb_pagF=${document.querySelectorAll('.sb_pagF').length} ` +
+            `a[aria-label^="第"]=${document.querySelectorAll('a[aria-label^="第"]').length}`,
+        );
+      }
     } else {
       main.appendChild(buildEmptyState(query));
     }
@@ -116,9 +126,11 @@ export const stripToResults: Feature = {
     document.head.appendChild(style);
 
     const after = document.body.querySelectorAll('*').length;
-    log.info(
-      `重写完成：DOM ${before} → ${after} 个节点，结果 ${results.length} 条` +
-        `（${engine.name}，查询「${query}」）`,
+    // 用 warn 级别输出关键诊断：Firefox 默认会显示 console.warn，
+    // 而 console.info 需开启调试等级才可见，跨浏览器排查时容易看不到。
+    log.warn(
+      `[重写完成] DOM ${before} → ${after}，结果 ${results.length} 条，` +
+        `分页 ${pages.length} 项（${engine.name}，查询「${query}」）`,
     );
   },
 };
