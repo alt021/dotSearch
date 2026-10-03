@@ -292,6 +292,9 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     const item = document.createElement('li');
     item.className = 'se-item';
 
+    // 目标地址：优先解析出的真实地址，回退引擎跳转链接
+    const href = result.url ?? result.link?.href;
+
     // 左栏：序号。瑞士风格用等宽数字建立纵向韵律，替代装饰性图形
     const num = document.createElement('span');
     num.className = 'se-num';
@@ -314,6 +317,13 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     const anchor = document.createElement('a');
     anchor.className = 'se-link';
     anchor.textContent = result.title || result.displayUrl || '(无标题)';
+    /*
+     * 标题锚点必须带上 href。
+     * 它带 pointer-events: auto，会把点击从下方的 .se-hit 手里接过来；
+     * 若不赋 href，点击就落到一个空链接上、什么也不会发生 ——
+     * 表现为「点标题没反应」。早期版本正是漏了这一步。
+     */
+    applyLinkAttrs(anchor, href);
     heading.appendChild(anchor);
     body.appendChild(heading);
 
@@ -326,23 +336,26 @@ function buildResultList(results: SearchResult[]): HTMLElement {
 
     // 整条可点击：用一个覆盖整栏的「stretched link」透明锚点。
     // 相比给整块包 <a>，这种方式保留了标题内独立的语义化链接
-    // （利于中键新标签、复制链接、右键菜单），且不影响内部文本选择。
-    const href = result.url ?? result.link?.href;
-    if (href) {
-      const hit = document.createElement('a');
-      hit.className = 'se-hit';
-      hit.href = href;
-      hit.setAttribute('aria-hidden', 'true');
-      hit.tabIndex = -1;
-      item.append(num, hit, body);
-    } else {
-      item.append(num, body);
-    }
+    // （利于中键新标签、复制链接、右键菜单）。
+    const hit = document.createElement('a');
+    hit.className = 'se-hit';
+    hit.setAttribute('aria-hidden', 'true');
+    hit.tabIndex = -1;
+    applyLinkAttrs(hit, href);
 
+    item.append(num, hit, body);
     list.appendChild(item);
   });
 
   return list;
+}
+
+/** 为锚点写入地址与打开方式（新标签页，且不泄漏 referrer） */
+function applyLinkAttrs(anchor: HTMLAnchorElement, href: string | undefined): void {
+  if (!href) return;
+  anchor.href = href;
+  anchor.target = '_blank';
+  anchor.rel = 'noopener noreferrer';
 }
 
 /** 一页分页项 */

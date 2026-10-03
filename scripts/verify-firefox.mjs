@@ -109,6 +109,22 @@ for (const c of CASES) {
         rootExists: !!document.getElementById('se-root'),
         resultCount: document.querySelectorAll('.se-item').length,
         currentTag: (document.querySelector('.se-page-current') || {}).tagName || null,
+        links: (function () {
+          var ls = document.querySelectorAll('.se-item .se-link');
+          var hs = document.querySelectorAll('.se-item .se-hit');
+          function cnt(arr, attr, val) {
+            return Array.prototype.filter.call(arr, function (a) {
+              return val ? a.getAttribute(attr) === val : !!a.getAttribute(attr);
+            }).length;
+          }
+          return {
+            linkTotal: ls.length,
+            linkHref: cnt(ls, 'href'),
+            linkBlank: cnt(ls, 'target', '_blank'),
+            hitHref: cnt(hs, 'href'),
+            hitBlank: cnt(hs, 'target', '_blank'),
+          };
+        })(),
         extra: (function () {
           var nodes = document.querySelectorAll('.se-extra');
           var hasRelated = false;
@@ -132,13 +148,27 @@ for (const c of CASES) {
   const extraClean =
     !out.extra.hasRelatedSearch && out.extra.leftoverRs === 0 && out.extra.leakedStyle === 0;
 
+  // 标题锚点与整条锚点都必须有 href 且在新标签页打开
+  const linkOk =
+    out.links.linkTotal > 0 &&
+    out.links.linkHref === out.links.linkTotal &&
+    out.links.linkBlank === out.links.linkTotal &&
+    out.links.hitHref === out.links.linkTotal &&
+    out.links.hitBlank === out.links.linkTotal;
+
   // 原站无分页时（结果不足一页）不算失败
-  const ok = (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean;
+  const ok =
+    (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean && linkOk;
   if (!ok) failures++;
   console.log(
     `${ok ? '✅' : '❌'} ${c.label}` +
       `  原站(分页容器=${src.bPag} 结果=${src.bAlgo})` +
       ` → 重写(分页=${out.pagRendered} 结果=${out.resultCount} 当前页=${out.currentTag})`,
+  );
+  console.log(
+    `     链接: 标题 ${out.links.linkHref}/${out.links.linkTotal} 有 href、` +
+      `${out.links.linkBlank} 新标签；整条 ${out.links.hitHref} 有 href、` +
+      `${out.links.hitBlank} 新标签`,
   );
   console.log(
     `     直答区: ${out.extra.count} 个` +

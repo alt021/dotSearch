@@ -307,6 +307,68 @@ const onSnippet = await hoverTitleAt(snipBox.x + 30, snipBox.y + snipBox.height 
 const onNum = await hoverTitleAt(numBox.x + numBox.width / 2, numBox.y + numBox.height / 2);
 const onOutside = await hoverTitleAt(5, 5);
 
+/**
+ * 链接行为验证。
+ * 两块内容：
+ *   1. 属性：标题锚点与整条锚点都必须有 href 且 target=_blank
+ *      （标题锚点若漏了 href，它带 pointer-events:auto 会吞掉点击，
+ *        表现为「点标题没反应」—— 曾出现过这个 bug）
+ *   2. 实测：点击标题确实触发新标签页打开
+ */
+const linkAttrs = await page.evaluate(() => {
+  const links = [...document.querySelectorAll('.se-item .se-link')];
+  const hits = [...document.querySelectorAll('.se-item .se-hit')];
+  const stat = (arr, sel) => ({
+    total: arr.length,
+    withHref: arr.filter((a) => a.getAttribute('href')).length,
+    blank: arr.filter((a) => a.getAttribute('target') === '_blank').length,
+    noopener: arr.filter((a) => (a.getAttribute('rel') ?? '').includes('noopener')).length,
+    sel,
+  });
+  return { link: stat(links, '.se-link'), hit: stat(hits, '.se-hit') };
+});
+
+// 标题中心点命中的应该是有 href 的标题锚点
+const titleHitTest = await page.evaluate(() => {
+  const link = document.querySelector('.se-item .se-link');
+  const r = link.getBoundingClientRect();
+  const el = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+  return {
+    tag: el?.tagName ?? null,
+    cls: el ? String(el.className).split(' ')[0] : null,
+    isTheLink: el === link,
+    href: el?.getAttribute?.('href')?.slice(0, 50) ?? null,
+    target: el?.getAttribute?.('target') ?? null,
+  };
+});
+
+/*
+ * 实测点击是否新开标签页。
+ * 拦截所有外部请求，避免真的去访问外网（测试环境可能不通）。
+ */
+await page.context().route('**', (route) => {
+  const url = route.request().url();
+  return url.includes('127.0.0.1') ? route.continue() : route.abort();
+});
+
+const titleBox = await page.locator('.se-item .se-link').first().boundingBox();
+let popupOpened = false;
+let popupUrl = null;
+try {
+  const [popup] = await Promise.all([
+    page.waitForEvent('popup', { timeout: 5_000 }),
+    page.mouse.click(titleBox.x + titleBox.width / 2, titleBox.y + titleBox.height / 2),
+  ]);
+  popupOpened = true;
+  popupUrl = popup.url().slice(0, 50);
+  await popup.close().catch(() => {});
+} catch {
+  popupOpened = false;
+}
+
+// 恢复路由
+await page.context().unroute('**');
+
 const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
 await page.screenshot({ path: join(root, '.build', shot), fullPage: true });
 
@@ -351,6 +413,21 @@ console.log(
     `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
 );
 console.log(`  4 合规链接残留：${after.complianceLinks}（应为 0）`);
+console.log('=== 链接行为 ===');
+for (const [name, s] of [
+  ['标题 .se-link', linkAttrs.link],
+  ['整条 .se-hit ', linkAttrs.hit],
+]) {
+  console.log(
+    `  ${name}：${s.total} 个，有 href ${s.withHref}，target=_blank ${s.blank}` +
+      `，rel=noopener ${s.noopener}`,
+  );
+}
+console.log(
+  `  标题中心命中：<${titleHitTest.tag} class="${titleHitTest.cls}">` +
+    ` 是标题锚点=${titleHitTest.isTheLink} target=${titleHitTest.target}`,
+);
+console.log(`  实测点击标题：新标签页=${popupOpened}  地址=${popupUrl ?? '(未打开)'}`);
 console.log('=== 视觉调整 ===');
 console.log(
   `  红线 ::before content：${after.visual.beforeContent}（应为 none 或 normal）`,
@@ -400,6 +477,16 @@ const clickOk =
   clickProbe.onSnippet?.includes('[命中hit]') &&
   clickProbe.onTitle?.includes('[命中link]');
 
+// 链接行为：两个锚点都必须有 href 且新标签打开，且实测能打开
+const linkOk =
+  linkAttrs.link.withHref === linkAttrs.link.total &&
+  linkAttrs.link.blank === linkAttrs.link.total &&
+  linkAttrs.hit.withHref === linkAttrs.hit.total &&
+  linkAttrs.hit.blank === linkAttrs.hit.total &&
+  titleHitTest.isTheLink &&
+  titleHitTest.target === '_blank' &&
+  popupOpened;
+
 const pass =
   foreignErrors.length === 0 &&
   after.rootExists &&
@@ -409,6 +496,7 @@ const pass =
   after.style.numbers === before.results &&
   after.clickable.hitCount === before.results &&
   clickOk &&
+  linkOk &&
   after.search.inMasthead &&
   after.search.oldSearchBarGone &&
   after.complianceLinks === 0 &&
