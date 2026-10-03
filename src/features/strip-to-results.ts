@@ -51,23 +51,55 @@ export const stripToResults: Feature = {
     return true;
   },
 
+  /**
+   * 判断当前已改写的页面是否需要重新执行。
+   *
+   * 背景：Firefox 从 bfcache 恢复页面时，改写后的 DOM 会一并被恢复，
+   * 但原站内容完整性不保证 —— 典型表现是分页导航消失。
+   *
+   * 判据：页面上若无分页导航，但原站此刻又能提取到分页，
+   * 说明改写结果已不完整，应当重建。
+   * 若原站本就没有分页（结果不足一页），则不算异常，保持现状。
+   */
+  needsRebuild() {
+    const rendered = document.querySelector('.se-pagination');
+    if (rendered) return false; // 分页在，状态完整
+    // 页面上没有分页，看原站是否具备分页可供提取
+    const source = extractPaginationLinks();
+    return source.length > 0;
+  },
+
   onNavigate({ engine, query }) {
-    // 已重写的页面跳过：清空 body 后原站不会再渲染
+    // 幂等保护：Runner 已通过 needsRebuild 决定是否执行，
+    // 若根容器仍在说明无需重建，直接返回。
     if (document.getElementById(ROOT_ID)) {
-      log.info('页面已重写，跳过重复执行');
+      log.info('页面已重写且状态完整，跳过');
       return;
     }
 
     const before = document.body.querySelectorAll('*').length;
     const container = document.querySelector(engine.resultContainerSelector);
     if (!container) {
-      log.warn('结果容器未找到：', engine.resultContainerSelector);
+      // 原站结果容器不存在（bfcache 恢复后可能已被清空），
+      // 此时重建只会得到空白页，保持现状并告警。
+      log.warn(`结果容器未找到（${engine.resultContainerSelector}），无法重写`);
       return;
     }
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
     const pages = extractPaginationLinks();
+
+    /*
+     * 诊断信息必须在清空 DOM **之前**采集。
+     * 早前版本把探测放在清空之后，counts 恒为 0，等于没打印。
+     */
+    const pagProbe =
+      `.b_pag=${document.querySelectorAll('.b_pag').length} ` +
+      `.sb_pagF=${document.querySelectorAll('.sb_pagF').length} ` +
+      `a[aria-label^="第"]=${document.querySelectorAll('a[aria-label^="第"]').length} ` +
+      `.b_results内a=${document.querySelectorAll('#b_results a[aria-label]').length}`;
+
     // 直答区结构复杂，仅保留原节点
     const answerNode = document.querySelector(EXTRA_SELECTORS.answer);
 
@@ -104,13 +136,9 @@ export const stripToResults: Feature = {
       if (pages.length > 0) {
         main.appendChild(buildPagination(pages));
       } else {
-        // 分页缺失是最常见的跨浏览器问题，此处显式告警而非静默跳过
-        log.warn(
-          '[分页缺失] 未提取到分页。容器探测：' +
-            `.b_pag=${document.querySelectorAll('.b_pag').length} ` +
-            `.sb_pagF=${document.querySelectorAll('.sb_pagF').length} ` +
-            `a[aria-label^="第"]=${document.querySelectorAll('a[aria-label^="第"]').length}`,
-        );
+        // 分页缺失是最常见的跨浏览器问题，此处显式告警而非静默跳过。
+        // pagProbe 于清空前采集，能真实反映原站分页结构。
+        log.warn(`[分页缺失] 提取到 0 项。清空前探测：${pagProbe}`);
       }
     } else {
       main.appendChild(buildEmptyState(query));

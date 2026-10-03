@@ -31,6 +31,17 @@ export interface Feature {
   supports(engine: EngineAdapter): boolean;
   onNavigate(ctx: FeatureContext): void | Promise<void>;
   dispose?(): void;
+
+  /**
+   * 页面已被本功能改写过时，是否需要重新执行。
+   *
+   * 存在的理由：浏览器可能从 bfcache 恢复页面，
+   * 此时改写后的 DOM 会被一并恢复，但内容完整性不保证
+   * （曾出现恢复后分页缺失的情况）。
+   *
+   * 返回 undefined 表示不参与该判断，Runner 会按「跳过」处理。
+   */
+  needsRebuild?(engine: EngineAdapter): boolean | undefined;
 }
 
 export type { EngineAdapter, EngineId } from './engine.js';

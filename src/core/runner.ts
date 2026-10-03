@@ -100,9 +100,31 @@ export class Runner {
     // 强制模式下（测试）跳过页面归属校验
     if (!forced && !engine.isSearchPage(url)) return;
 
-    // 页面已被重写（根容器存在）说明原站 DOM 不会再变化，
-    // 此时换词不会再由 SPA 渲染出新的结果容器，跳过等待避免空耗
-    if (document.getElementById('se-root')) return;
+    /*
+     * 页面已被重写（根容器存在）说明原站 DOM 不会再变化。
+     *
+     * 这里不能无条件重建，也不能无条件跳过：
+     *   - 跳过：正常换词场景，原站不会再渲染新结果，重建只会得到空内容
+     *   - 重建：Firefox 从 bfcache 恢复时，重写的 DOM 会被一并恢复，
+     *           但原站分页可能已失效（曾出现重写后分页缺失）
+     *
+     * 判据：重建后的页面里若缺少分页导航，说明状态不完整，需要重来。
+     * 判据本身交给 features 决定，core 只负责执行。
+     */
+    if (document.getElementById('se-root')) {
+      const state = ALL_FEATURES
+        .filter((f) => f.id === 'strip-to-results')
+        .map((f) => f.needsRebuild?.(engine))
+        .find((v) => v !== undefined);
+
+      if (state !== true) {
+        log.warn('[换词检测] 已重写且状态完整 → 跳过');
+        return;
+      }
+      log.warn('[换词检测] 状态不完整（如缺分页）→ 重建');
+      // 移除旧根容器，让功能能重新解析原站 DOM
+      document.getElementById('se-root')?.remove();
+    }
 
     // 等结果容器出现再执行，避免在骨架屏阶段空跑
     const container = await waitForSelector(engine.resultContainerSelector, { timeout: 8_000 });
