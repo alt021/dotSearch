@@ -131,16 +131,40 @@ const after = await page.evaluate(() => ({
   style: {
     masthead: Boolean(document.querySelector('.se-masthead')),
     brand: Boolean(document.querySelector('.se-brand .se-mark')),
-    query: document.querySelector('.se-query')?.textContent ?? null,
+    query: document.querySelector('.se-query')?.textContent
+      ?? document.querySelector('.se-query')?.value
+      ?? null,
     stat: (document.querySelector('.se-stat')?.textContent ?? '').slice(0, 30),
     numbers: document.querySelectorAll('.se-item .se-num').length,
     firstNumber: document.querySelector('.se-item .se-num')?.textContent ?? null,
   },
+  // 调整点 1：整条可点击（stretched link）
+  clickable: {
+    hitCount: document.querySelectorAll('.se-item .se-hit').length,
+    firstHitHref: document.querySelector('.se-item .se-hit')?.href ?? null,
+    // se-body 无 pointer-events:none 才能选中文本
+    bodyPointerEvents: getComputedStyle(document.querySelector('.se-body')).pointerEvents,
+  },
+  // 调整点 2：页头标题即搜索输入，无独立搜索框
+  search: {
+    inMasthead: Boolean(document.querySelector('.se-masthead .se-query')),
+    isInput: document.querySelector('.se-query')?.tagName === 'INPUT',
+    oldSearchBarGone: document.querySelectorAll('.se-search').length === 0,
+  },
+  // 调整点 3：分页
+  pagination: {
+    count: document.querySelectorAll('.se-pagination .se-page').length,
+    current: (document.querySelector('.se-page-current')?.textContent ?? '').slice(0, 10),
+    currentTag: document.querySelector('.se-page-current')?.tagName ?? null,
+  },
+  // 调整点 4：合规链接
+  complianceLinks: [...document.querySelectorAll('a[href]')].filter((a) =>
+    /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
+  ).length,
   // 原站跳转链接应已被解析为真实地址
   redirectLeakCount: [...document.querySelectorAll('.se-link')].filter((a) =>
     a.href.includes('bing.com/ck/a'),
   ).length,
-  pagination: document.querySelectorAll('.se-pagination .se-page').length,
 }));
 
 const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
@@ -154,8 +178,7 @@ console.log('=== 精简后 ===');
 console.log(`  DOM 节点：${after.nodes}  （减少 ${before.nodes - after.nodes}）`);
 console.log(`  重建结果条目：${after.results}  （原站 ${before.results} 条）`);
 console.log(`  根容器 #se-root：${after.rootExists}`);
-console.log(`  搜索框：${after.searchBarExists}  回填词「${after.inputValue}」`);
-console.log(`  分页链接：${after.pagination}`);
+console.log(`  旧搜索框：${after.searchBarExists ? '仍存在' : '已移除'}`);
 console.log('=== 首条结果（重建后）===');
 console.log(`  标题：${after.firstResult.title}`);
 console.log(`  来源：${after.firstResult.cite}`);
@@ -167,6 +190,23 @@ console.log(`  页头：${after.style.masthead}  标识块：${after.style.brand
 console.log(`  查询词：${after.style.query || '(样例页无 q 参数)'}`);
 console.log(`  统计：${after.style.stat}`);
 console.log(`  序号栏：${after.style.numbers} 个，首个「${after.style.firstNumber}」`);
+console.log('=== 调整点验证 ===');
+console.log(
+  `  1 整条可点击：hit ${after.clickable.hitCount} 个（应=${before.results}）` +
+    `  se-body pointer-events=${after.clickable.bodyPointerEvents}（须为 auto）`,
+);
+console.log(
+  `    首条 hit 地址：${after.clickable.firstHitHref?.slice(0, 50) ?? '(无)'}`,
+);
+console.log(
+  `  2 标题即搜索：页头内 input=${after.search.inMasthead}  isInput=${after.search.isInput}` +
+    `  旧搜索框已移除=${after.search.oldSearchBarGone}`,
+);
+console.log(
+  `  3 分页：${after.pagination.count} 个` +
+    `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
+);
+console.log(`  4 合规链接残留：${after.complianceLinks}（应为 0）`);
 console.log('=== 原站残留检查（应全为 0）===');
 for (const [k, v] of Object.entries(after.leftovers)) {
   console.log(`  ${v === 0 ? 'OK  ' : 'FAIL'} ${k}: ${v}`);
@@ -179,6 +219,10 @@ const pass =
   after.redirectLeakCount === 0 &&
   after.style.masthead &&
   after.style.numbers === before.results &&
+  after.clickable.hitCount === before.results &&
+  after.search.inMasthead &&
+  after.search.oldSearchBarGone &&
+  after.complianceLinks === 0 &&
   Object.values(after.leftovers).every((v) => v === 0);
 
 console.log(`\n样例页原有报错（与本项目无关）：${baselineErrors.length} 条`);

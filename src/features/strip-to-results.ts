@@ -19,8 +19,13 @@ import { log } from '../core/env.js';
 
 /** 需要保留的非结果内容 */
 const EXTRA_SELECTORS = {
-  /** 分页控件：仅取其页码链接用于重建 */
-  pagination: '#b_pag',
+  /**
+   * 分页控件。
+   * 注意是 **class** 而非 id —— 实测 Bing 渲染为
+   * `<li class="b_pag"><nav><ul class="sb_pagF"><li><a>…</a></li></ul></nav></li>`，
+   * 不存在 id="b_pag"。用 #b_pag 永远匹配不到（这是页码不显示的根因）。
+   */
+  pagination: '.b_pag',
   /** 顶部直答区：结构复杂，仅保留原节点 */
   answer: '#b_context .b_ans',
 } as const;
@@ -59,6 +64,10 @@ export const stripToResults: Feature = {
     // 直答区结构复杂，仅保留原节点
     const answerNode = document.querySelector(EXTRA_SELECTORS.answer);
 
+    // 直答区是唯一会保留到新页面的原站节点，
+    // 其内部常混入备案号、隐私政策、条款等合规链接，需先剔除
+    if (answerNode) stripComplianceLinks(answerNode as HTMLElement);
+
     // ---- 2. 清空页面 -------------------------------------------------------
     document.body.innerHTML = '';
     document.body.className = 'se-stripped';
@@ -71,9 +80,9 @@ export const stripToResults: Feature = {
     root.id = ROOT_ID;
     root.dataset.query = query;
 
-    // 页头：瑞士风格以「元信息块 + 粗规则线」建立页面起点
+    // 页头：瑞士风格以「元信息块 + 粗规则线」建立页面起点。
+    // 页头内的大标题同时承担搜索输入职责，不再另设搜索框。
     root.appendChild(buildMasthead(query, results.length, engine));
-    root.appendChild(buildSearchBar(query, engine));
 
     const main = document.createElement('main');
     main.className = 'se-main';
@@ -85,7 +94,7 @@ export const stripToResults: Feature = {
 
     if (results.length > 0) {
       main.appendChild(buildResultList(results));
-      if (pages.length > 0) main.appendChild(buildPagination(pages, query));
+      if (pages.length > 0) main.appendChild(buildPagination(pages));
     } else {
       main.appendChild(buildEmptyState(query));
     }
@@ -109,8 +118,12 @@ export const stripToResults: Feature = {
 
 /**
  * 构建页头。
+ *
  * 瑞士风格典型的杂志式页头：刊名式标识 + 查询词 + 统计信息，
  * 底部以粗规则线收束，替代任何色块或阴影装饰。
+ *
+ * 查询词本身即是搜索输入：点击即可编辑，按 Enter 发起搜索。
+ * 因此页头不再另设独立搜索框，避免同一页面出现两个搜索入口。
  */
 function buildMasthead(query: string, count: number, engine: EngineAdapter): HTMLElement {
   const head = document.createElement('header');
@@ -125,18 +138,45 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   brand.append(mark, document.createTextNode(`${engine.name} — 检索`));
   head.appendChild(brand);
 
-  if (query) {
-    const q = document.createElement('h1');
-    q.className = 'se-query';
-    q.textContent = query;
-    head.appendChild(q);
-  }
+  // 查询词作为可编辑输入：大字号标题样式，回车即搜索
+  const form = document.createElement('form');
+  form.className = 'se-query-form';
+  form.setAttribute('role', 'search');
+
+  const input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'se-query';
+  input.value = query;
+  input.setAttribute('aria-label', '搜索关键词');
+  input.spellcheck = false;
+  input.autocomplete = 'off';
 
   const stat = document.createElement('p');
   stat.className = 'se-stat';
+  // 默认显示结果数；进入编辑态后改为提示回车提交
   stat.textContent = `找到 ${count} 条结果`;
-  head.appendChild(stat);
 
+  form.append(input, stat);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const keyword = input.value.trim();
+    if (!keyword || keyword === query) return;
+    const { path, param } = engine.searchForm;
+    window.location.assign(
+      `${window.location.origin}${path}?${param}=${encodeURIComponent(keyword)}`,
+    );
+  });
+
+  // 聚焦时切换提示文案，让用户知道回车可用
+  input.addEventListener('focus', () => {
+    stat.textContent = '按回车键发起搜索';
+  });
+  input.addEventListener('blur', () => {
+    // 未修改内容则恢复原提示
+    if (input.value.trim() === query) stat.textContent = `找到 ${count} 条结果`;
+  });
+
+  head.appendChild(form);
   return head;
 }
 
@@ -153,7 +193,6 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     const num = document.createElement('span');
     num.className = 'se-num';
     num.textContent = String(i + 1).padStart(2, '0');
-    item.appendChild(num);
 
     // 右栏：内容
     const body = document.createElement('div');
@@ -172,12 +211,6 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     const anchor = document.createElement('a');
     anchor.className = 'se-link';
     anchor.textContent = result.title || result.displayUrl || '(无标题)';
-    // 优先用解析出的真实地址，失败则回退引擎跳转链接
-    anchor.href = result.url ?? result.link?.href ?? '#';
-    if (result.url) {
-      anchor.target = '_blank';
-      anchor.rel = 'noopener noreferrer';
-    }
     heading.appendChild(anchor);
     body.appendChild(heading);
 
@@ -188,83 +221,116 @@ function buildResultList(results: SearchResult[]): HTMLElement {
       body.appendChild(desc);
     }
 
-    item.appendChild(body);
+    // 整条可点击：用一个覆盖整栏的「stretched link」透明锚点。
+    // 相比给整块包 <a>，这种方式保留了标题内独立的语义化链接
+    // （利于中键新标签、复制链接、右键菜单），且不影响内部文本选择。
+    const href = result.url ?? result.link?.href;
+    if (href) {
+      const hit = document.createElement('a');
+      hit.className = 'se-hit';
+      hit.href = href;
+      hit.setAttribute('aria-hidden', 'true');
+      hit.tabIndex = -1;
+      item.append(num, hit, body);
+    } else {
+      item.append(num, body);
+    }
+
     list.appendChild(item);
   });
 
   return list;
 }
 
-/** 从原站分页控件提取页码链接，用于重建 */
-function extractPaginationLinks(): Array<{ label: string; href: string }> {
+/** 一页分页项 */
+interface PageLink {
+  /** 显示文本 */
+  label: string;
+  /** 目标地址；当前页为 null */
+  href: string | null;
+  /** 完整的无障碍标签（如「第 2 页」「下一页」） */
+  ariaLabel: string;
+  /** 是否为当前所在页 */
+  current: boolean;
+}
+
+/**
+ * 从原站分页控件提取页码。
+ *
+ * 真实结构（实测）：
+ *   li.b_pag > nav > ul.sb_pagF > li > a[aria-label="第 N 页"]
+ *
+ * 两个要点：
+ *   - 当前页的 <a> **没有 href**（只有 .sb_pagS 标记），不能按 a[href] 过滤，否则当前页会丢失
+ *   - 无障碍标签在 aria-label 上，文本可能被截断或为图标（下一页是 ‹）
+ */
+function extractPaginationLinks(): PageLink[] {
   const root = document.querySelector(EXTRA_SELECTORS.pagination);
   if (!root) return [];
 
-  return Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href]'))
-    .map((a) => ({ label: (a.textContent ?? '').trim(), href: a.href }))
-    .filter((x) => x.label.length > 0);
+  const anchors = Array.from(
+    root.querySelectorAll<HTMLAnchorElement>('.sb_pagF a, nav a[aria-label]'),
+  );
+
+  const pages: PageLink[] = [];
+  const seen = new Set<string>();
+
+  for (const a of anchors) {
+    const ariaLabel = (a.getAttribute('aria-label') ?? '').trim();
+    const rawHref = a.getAttribute('href');
+    const current = !rawHref || a.classList.contains('sb_pagS');
+
+    // 文本：图标型按钮（下一页/上一页）用 aria-label 兜底
+    const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const label = text || ariaLabel;
+    if (!label) continue;
+
+    // 去重：首页同时有 aria-label 和文本，按 aria-label 归一
+    const key = ariaLabel || label;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    pages.push({
+      label,
+      // 相对地址补全为绝对地址；当前页无 href
+      href: rawHref ? new URL(rawHref, location.origin).href : null,
+      ariaLabel: ariaLabel || label,
+      current,
+    });
+  }
+
+  return pages;
 }
 
 /** 构建分页导航 */
-function buildPagination(
-  pages: Array<{ label: string; href: string }>,
-  query: string,
-): HTMLElement {
+function buildPagination(pages: PageLink[]): HTMLElement {
   const nav = document.createElement('nav');
   nav.className = 'se-pagination';
   nav.setAttribute('aria-label', '分页');
 
   for (const page of pages) {
+    if (page.current) {
+      // 当前页用 <span>，保持语义正确（不可点击的当前页不应是链接）
+      const cur = document.createElement('span');
+      cur.className = 'se-page se-page-current';
+      cur.textContent = page.label;
+      cur.setAttribute('aria-current', 'page');
+      cur.setAttribute('aria-label', page.ariaLabel);
+      nav.appendChild(cur);
+      continue;
+    }
+
     const link = document.createElement('a');
     link.className = 'se-page';
-    link.href = page.href;
+    link.href = page.href ?? '#';
     link.textContent = page.label;
-    // 引擎的跳转链接已带原始查询词，这里补上当前查询词保证一致
-    if (query && !link.href.includes('q=')) {
-      link.href += (link.href.includes('?') ? '&' : '?') + `q=${encodeURIComponent(query)}`;
-    }
+    link.setAttribute('aria-label', page.ariaLabel);
     nav.appendChild(link);
   }
 
   return nav;
 }
 
-/**
- * 构建搜索框。
- * 用 location.assign 走整页跳转，保证下次搜索时脚本能重新初始化
- * （原站 pushState 换词机制已随 #b_header 移除而失效）。
- */
-function buildSearchBar(query: string, engine: EngineAdapter): HTMLElement {
-  const form = document.createElement('form');
-  form.className = 'se-search';
-  form.setAttribute('role', 'search');
-
-  const input = document.createElement('input');
-  input.type = 'search';
-  input.className = 'se-search-input';
-  input.value = query;
-  input.placeholder = '搜索…';
-  input.setAttribute('aria-label', '搜索');
-  input.autofocus = true;
-
-  const button = document.createElement('button');
-  button.type = 'submit';
-  button.className = 'se-search-btn';
-  button.textContent = '搜索';
-
-  form.append(input, button);
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    const keyword = input.value.trim();
-    if (!keyword) return;
-    const { path, param } = engine.searchForm;
-    window.location.assign(
-      `${window.location.origin}${path}?${param}=${encodeURIComponent(keyword)}`,
-    );
-  });
-
-  return form;
-}
 
 /** 无结果时的占位提示 */
 function buildEmptyState(query: string): HTMLElement {
@@ -272,4 +338,27 @@ function buildEmptyState(query: string): HTMLElement {
   empty.className = 'se-empty';
   empty.textContent = `没有找到与「${query}」相关的结果。`;
   return empty;
+}
+
+/** 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
+const COMPLIANCE_PATTERN =
+  /隐私|条款|条款|协议|备案|许可|版权|法律|声明|政策|服务条款|隐私政策|隐私声明|京 ICP|沪 ICP|粤 ICP|ICP 备|公网安备|copyright|privacy|terms|legal|cookie/i;
+
+/**
+ * 移除节点内的备案 / 隐私 / 条款等合规链接。
+ *
+ * 背景：重写后页面理论上已无这些内容，但直答区（#b_context .b_ans）
+ * 是唯一保留的原站节点，其内部常混入此类链接，
+ * 会在纯结果列表里显得突兀，故显式剔除。
+ */
+function stripComplianceLinks(root: HTMLElement): void {
+  root.querySelectorAll('a[href]').forEach((a) => {
+    const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
+    const href = a.getAttribute('href') ?? '';
+    if (COMPLIANCE_PATTERN.test(text) || COMPLIANCE_PATTERN.test(href)) {
+      // 优先删整个包裹元素，避免留下空白段落
+      const block = a.closest('li, p, div') ?? a;
+      block.remove();
+    }
+  });
 }
