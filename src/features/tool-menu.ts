@@ -141,7 +141,21 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
     a.setAttribute('role', 'menuitem');
-    a.textContent = entry.label;
+
+    /*
+     * 文字放进独立的 span，而不是直接作为 <a> 的文本。
+     *
+     * 外面套一层 span 并非多余：样式表（浏览器默认、其他扩展、
+     * 或本脚本的旧版本残留）常会给 a:hover 加 text-decoration: underline。
+     * 而 text-decoration **不会传播进原子行内元素**，
+     * 因此把文字放进 display: inline-block 的 span，
+     * 那些下划线就到不了文字上 —— 相当于把「链接」与「文字」分开。
+     */
+    const label = document.createElement('span');
+    label.className = 'se-menu-label';
+    label.textContent = entry.label;
+
+    a.appendChild(label);
     nav.appendChild(a);
   }
 

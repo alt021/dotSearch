@@ -484,7 +484,6 @@ body.se-stripped {
 
 .se-menu-link {
   padding: 0.7rem 0.9rem;
-  font-size: 0.875rem;
   color: inherit;
   text-decoration: none;
   border-bottom: 1px solid var(--se-line);
@@ -492,6 +491,32 @@ body.se-stripped {
 
 .se-menu-link:last-child {
   border-bottom: 0;
+}
+
+/*
+ * 条目文字单独一层。
+ *
+ * ## 为什么要 inline-block
+ *
+ * 外部样式表（浏览器默认、其他扩展、或本脚本旧版本残留）常给
+ * a:hover 加 text-decoration: underline。而按 CSS 规范，
+ * text-decoration **不会传播进原子行内元素**（inline-block 属于此类），
+ * 所以把文字放进 display: inline-block 的 span，
+ * 那些下划线就落不到文字上 —— 即「让链接不置于文字上」。
+ * 这也是唯一能挡住**别人**加的装饰的办法：
+ * 若下划线加在 <a> 上，后代设 text-decoration: none 是无效的。
+ *
+ * ## 层级
+ *
+ * 字号比面板标题略小、颜色取次要色，
+ * 让它读起来是菜单项而非页面标题 —— 弹出菜单本身是辅助性内容，
+ * 文字不该与正文争视觉重量。
+ */
+.se-menu-label {
+  display: inline-block;
+  font-size: 0.8125rem;
+  color: var(--se-muted);
+  text-decoration: none;
 }
 
 /*
