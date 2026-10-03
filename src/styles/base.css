@@ -70,7 +70,8 @@ body.se-stripped {
   display: flex;
   align-items: center;
   gap: 0.6rem;
-  margin: 0 0 1.75rem;
+  /* 与下方搜索框的间距改由 .se-brand-row 承担（那一行还要放菜单按钮） */
+  margin: 0;
   font-size: 0.75rem;
   font-weight: 500;
   letter-spacing: 0.14em;
@@ -394,204 +395,112 @@ body.se-stripped {
 }
 
 /* ==========================================================================
-   右侧工具栏
+   页头菜单
    --------------------------------------------------------------------------
-   替代原 Tampermonkey 弹出菜单，提供必应账户 / Rewards / 设置入口。
+   放在页头小标题「BING — 检索」那一行的末尾，点开后在按钮下方弹出条目面板。
 
-   状态与位移（三态由 transform 表达，均不参与页面布局）：
-     收起  translateX(100%)              整块移出视口
-     露出  translateX(calc(100% - 1rem)) 恰好只留 tab 一条在边缘
-     展开  translateX(0)                  整块滑入
-
-   tab 宽 1rem，所以「100% - 1rem」正好露出 tab 自身。
+   相比先前的贴边侧边栏，这一版简单得多：
+   按钮是文档流内的普通元素，位置稳定，不需要遮罩层，
+   也不必处理贴边触摸区与滑入动画带来的各种边界情况。
    ========================================================================== */
 
-/*
- * 裁切层：固定在视口上、裁掉溢出，且不接收事件。
- * 存在意义见 tool-sidebar.ts 的说明 —— 防止隐藏在视口外的面板
- * 撑出横向滚动条，进而引发 innerWidth 抖动与布局位移。
- */
-.se-toolbar-layer {
-  position: fixed;
-  inset: 0;
-  z-index: 2147483000;
-  overflow: hidden;
-  pointer-events: none;
-}
+/* ---- 小标题行：左品牌 + 右菜单 ---- */
 
-/*
- * 黑色叠加层：展开时压暗页面，把工具栏区域与内容区分开。
- *
- * 它同时承担「点击面板外收起」的落点。若不加这一层，
- * 那么点击外部就是真的点在页面上，极易误触结果链接。
- * 平时 opacity 0 且不接收事件，不干扰正常浏览。
- */
-.se-toolbar-scrim {
-  position: absolute;
-  inset: 0;
-  background: rgb(0 0 0 / 45%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.22s ease;
-}
-
-.se-toolbar-layer.se-scrim-on .se-toolbar-scrim {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.se-toolbar {
-  /* 提示条宽度：露出位移与条宽共用此变量，避免两处写死后失配 */
-  --se-tab-w: 1.25rem;
-
-  /* absolute 才能被裁切层约束；fixed 后代不受祖先 overflow 影响 */
-  position: absolute;
-  top: 0;
-  right: 0;
+.se-brand-row {
   display: flex;
-  align-items: stretch;
-  height: 100%;
-  pointer-events: auto;
-  transform: translateX(100%);
-  transition: transform 0.22s ease;
-}
-
-/* 露出：鼠标贴近右边缘时的提示态 */
-.se-toolbar.se-peek {
-  transform: translateX(calc(100% - var(--se-tab-w)));
-}
-
-/* 展开 */
-.se-toolbar.se-open {
-  transform: translateX(0);
-}
-
-/* ---- 边缘那一条：既是提示，也是展开按钮 ---- */
-
-.se-toolbar-tab {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--se-tab-w);
-  padding: 0;
-  background: var(--se-fg);
-  border: 0;
-  border-radius: 0;
-  cursor: pointer;
-  /* 露出态下只有这一条可见，不设过渡会显得突兀 */
-  transition: background-color 0.15s ease;
-}
-
-.se-toolbar-tab:hover {
-  background: var(--se-accent);
-}
-
-.se-toolbar-tab:focus-visible {
-  outline: 2px solid var(--se-accent);
-  outline-offset: -2px;
-}
-
-/* 纯 CSS 箭头，无图标依赖 */
-.se-toolbar-chevron {
-  width: 0.35rem;
-  height: 0.35rem;
-  border-left: 1.5px solid #fff;
-  border-bottom: 1.5px solid #fff;
-  transform: rotate(45deg) translate(0.06rem, -0.06rem);
-  transition: transform 0.22s ease;
-}
-
-/*
- * 展开后隐藏整条提示条：
- * 此时左侧会紧贴面板，留着这条深色竖线反而像分隔线、显得多余；
- * 收起改由面板内的「关闭」按钮、Esc 与点击叠加层完成。
- */
-.se-toolbar.se-open .se-toolbar-tab {
-  display: none;
-}
-
-/* ---- 面板 ---- */
-
-.se-toolbar-panel {
-  display: flex;
-  flex-direction: column;
-  width: 17rem;
-  padding: 1.5rem 1.25rem;
-  background: var(--se-bg);
-  border-left: 1px solid var(--se-line);
-}
-
-.se-toolbar-head {
-  display: flex;
+  /* 按基线对齐：菜单是文字标签，与小标题的字底对齐才不显歪 */
   align-items: baseline;
   justify-content: space-between;
   gap: 1rem;
-  padding-bottom: 0.75rem;
-  border-bottom: 3px solid var(--se-rule);
+  /* 与下方搜索框的间距统一在这里设置 */
+  margin-bottom: 1.75rem;
 }
 
-.se-toolbar-title {
-  margin: 0;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--se-muted);
+/* 挂载点：同时作为弹出层的定位参照 */
+.se-menu-slot {
+  position: relative;
 }
 
-.se-toolbar-close {
+/* ---- 触发按钮 ---- */
+
+/*
+ * 做成「文字标签」而不是图标按钮：
+ * 沿用与小标题同一套字号、字距与大写转换，
+ * 视觉上像是那一行的自然延续，而不是外挂的控件。
+ */
+.se-menu-btn {
   padding: 0;
   font: inherit;
   font-size: 0.75rem;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--se-muted);
   background: transparent;
   border: 0;
   border-radius: 0;
   cursor: pointer;
+  transition: color 0.15s ease;
 }
 
-.se-toolbar-close:hover {
+.se-menu-btn:hover,
+.se-menu-btn-active {
   color: var(--se-accent);
 }
 
-.se-toolbar-nav {
-  display: flex;
-  flex-direction: column;
-  margin-top: 0.25rem;
+.se-menu-btn:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: 3px;
 }
 
-/* 条目之间用细线切割，与结果列表同一语言 */
-.se-toolbar-link {
-  padding: 0.9rem 0;
-  font-size: 0.9375rem;
-  font-weight: 500;
+/* ---- 弹出面板 ---- */
+
+/*
+ * 锚在按钮下方、右对齐。
+ * 收起时用 display: none（配合 inert）：它不参与布局，
+ * 也不会被 Tab 或读屏软件访问到。
+ */
+.se-menu-popup {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 10;
+  min-width: 13rem;
+  padding: 0.25rem 0.9rem;
+  background: var(--se-bg);
+  border: 1px solid var(--se-fg);
+}
+
+.se-menu-popup[inert] {
+  display: none;
+}
+
+.se-menu-nav {
+  display: flex;
+  flex-direction: column;
+}
+
+.se-menu-link {
+  padding: 0.7rem 0;
+  font-size: 0.875rem;
   color: inherit;
   text-decoration: none;
   border-bottom: 1px solid var(--se-line);
 }
 
-.se-toolbar-link:last-child {
+.se-menu-link:last-child {
   border-bottom: 0;
 }
 
-/* 悬停：标红 + 下划线（跟随文字宽度，与结果条目语汇一致） */
-.se-toolbar-link:hover {
+/* 悬停：标红 + 下划线，与结果条目、页码同一套语汇 */
+.se-menu-link:hover {
   color: var(--se-accent);
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
 }
 
-.se-toolbar-link:focus-visible {
+.se-menu-link:focus-visible {
   outline: 2px solid var(--se-accent);
   outline-offset: 2px;
-}
-
-/* 窄屏下收窄面板，避免挤占阅读区 */
-@media (max-width: 600px) {
-  .se-toolbar-panel {
-    width: 14rem;
-    padding: 1.25rem 1rem;
-  }
 }

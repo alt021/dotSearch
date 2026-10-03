@@ -65,6 +65,12 @@ function isRelatedSearchBlock(el: Element): boolean {
 /** 重建后的根容器 id，便于样式与后续功能定位 */
 export const ROOT_ID = 'se-root';
 
+/**
+ * 页头里预留给菜单的挂载点类名。
+ * tool-menu 功能据此找到落点，避免与页头实现细节耦合。
+ */
+export const MENU_SLOT_CLASS = 'se-menu-slot';
+
 export const stripToResults: Feature = {
   id: 'strip-to-results',
   name: '重写结果页',
@@ -243,7 +249,20 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   mark.className = 'se-mark';
   mark.setAttribute('aria-hidden', 'true');
   brand.append(mark, document.createTextNode(`${engine.name} — 检索`));
-  head.appendChild(brand);
+
+  /*
+   * 小标题独占一行，右侧留出菜单挂载点。
+   * 页头只负责「排版与留位」，菜单由 tool-menu 功能负责填充 ——
+   * 这样页头不必知道菜单里有什么，菜单换实现也不影响页头。
+   */
+  const brandRow = document.createElement('div');
+  brandRow.className = 'se-brand-row';
+
+  const menuSlot = document.createElement('div');
+  menuSlot.className = MENU_SLOT_CLASS;
+
+  brandRow.append(brand, menuSlot);
+  head.appendChild(brandRow);
 
   // 查询词作为可编辑输入：大字号标题样式，回车即搜索
   const form = document.createElement('form');

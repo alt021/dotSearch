@@ -109,6 +109,26 @@ for (const c of CASES) {
         rootExists: !!document.getElementById('se-root'),
         resultCount: document.querySelectorAll('.se-item').length,
         currentTag: (document.querySelector('.se-page-current') || {}).tagName || null,
+        // 页头菜单：inert 属性与弹出层在各浏览器表现不完全一致，一并检查
+        menu: (function () {
+          var btn = document.querySelector('.se-menu-btn');
+          var popup = document.getElementById('se-menu-popup');
+          if (!btn || !popup) return { exists: false };
+          return {
+            exists: true,
+            label: (btn.textContent || '').trim(),
+            sameRow: !!btn.closest('.se-brand-row'),
+            closedHidden: getComputedStyle(popup).display === 'none',
+            linkCount: popup.querySelectorAll('.se-menu-link').length,
+            hrefsOk: Array.prototype.every.call(
+              popup.querySelectorAll('.se-menu-link'),
+              function (a) {
+                return (a.getAttribute('href') || '').indexOf('http') === 0 &&
+                  a.getAttribute('target') === '_blank';
+              },
+            ),
+          };
+        })(),
         links: (function () {
           var ls = document.querySelectorAll('.se-item .se-link');
           var hs = document.querySelectorAll('.se-item .se-hit');
@@ -148,6 +168,16 @@ for (const c of CASES) {
   const extraClean =
     !out.extra.hasRelatedSearch && out.extra.leftoverRs === 0 && out.extra.leakedStyle === 0;
 
+  // 页头菜单：按钮与标题同行、收起时不显示、三个入口地址正确
+  // （inert 属性与弹出层在各浏览器表现不完全一致，故一并检查）
+  const menuOk =
+    out.menu.exists &&
+    out.menu.label === '菜单' &&
+    out.menu.sameRow &&
+    out.menu.closedHidden &&
+    out.menu.linkCount === 3 &&
+    out.menu.hrefsOk;
+
   // 标题锚点与整条锚点都必须有 href 且在新标签页打开
   const linkOk =
     out.links.linkTotal > 0 &&
@@ -158,7 +188,7 @@ for (const c of CASES) {
 
   // 原站无分页时（结果不足一页）不算失败
   const ok =
-    (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean && linkOk;
+    (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean && linkOk && menuOk;
   if (!ok) failures++;
   console.log(
     `${ok ? '✅' : '❌'} ${c.label}` +
@@ -169,6 +199,10 @@ for (const c of CASES) {
     `     链接: 标题 ${out.links.linkHref}/${out.links.linkTotal} 有 href、` +
       `${out.links.linkBlank} 新标签；整条 ${out.links.hitHref} 有 href、` +
       `${out.links.hitBlank} 新标签`,
+  );
+  console.log(
+    `     菜单: ${out.menu.exists ? out.menu.label : '(缺失)'}` +
+      ` 入口${out.menu.linkCount} 同行=${out.menu.sameRow} 收起隐藏=${out.menu.closedHidden}`,
   );
   console.log(
     `     直答区: ${out.extra.count} 个` +
