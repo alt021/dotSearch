@@ -500,9 +500,14 @@ body.se-stripped {
  * 这里刻意不用「变红 + 下划线」—— 那是结果条目与页码的语汇；
  * 弹出菜单里底色才是更惯用的「当前项」表达，
  * 也避免红色在菜单这种小面积里显得过重。
+ *
+ * 同时把该条目的下分隔线隐去：条目之间本就有 1px 分隔线，
+ * 灰底一衬，它会看着像悬停产生的下划线。
+ * 用 transparent 而非 none，宽度不变故不会引起 1px 抖动。
  */
 .se-menu-link:hover {
   background: color-mix(in srgb, var(--se-fg) 8%, transparent);
+  border-bottom-color: transparent;
 }
 
 .se-menu-link:focus-visible {
