@@ -150,6 +150,8 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   input.setAttribute('aria-label', '搜索关键词');
   input.spellcheck = false;
   input.autocomplete = 'off';
+  // 点击页面其他区域时会失焦，避免残留的原生选中高亮影响观感
+  input.addEventListener('blur', () => input.setSelectionRange(0, 0));
 
   const stat = document.createElement('p');
   stat.className = 'se-stat';
@@ -171,9 +173,11 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   input.addEventListener('focus', () => {
     stat.textContent = '按回车键发起搜索';
   });
+
+  // 失焦立即还原：舍弃用户对该标题的全部改动
   input.addEventListener('blur', () => {
-    // 未修改内容则恢复原提示
-    if (input.value.trim() === query) stat.textContent = `找到 ${count} 条结果`;
+    input.value = query;
+    stat.textContent = `找到 ${count} 条结果`;
   });
 
   head.appendChild(form);

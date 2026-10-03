@@ -142,8 +142,9 @@ const after = await page.evaluate(() => ({
   clickable: {
     hitCount: document.querySelectorAll('.se-item .se-hit').length,
     firstHitHref: document.querySelector('.se-item .se-hit')?.href ?? null,
-    // se-body 无 pointer-events:none 才能选中文本
     bodyPointerEvents: getComputedStyle(document.querySelector('.se-body')).pointerEvents,
+    numPointerEvents: getComputedStyle(document.querySelector('.se-num')).pointerEvents,
+    linkPointerEvents: getComputedStyle(document.querySelector('.se-link')).pointerEvents,
   },
   // 调整点 2：页头标题即搜索输入，无独立搜索框
   search: {
@@ -166,6 +167,86 @@ const after = await page.evaluate(() => ({
     a.href.includes('bing.com/ck/a'),
   ).length,
 }));
+
+/**
+ * 实测点击：确认序号区 / 摘要区 / 标题区都能触发跳转。
+ * 只看 CSS 属性不够——层序或事件设计有误会让点击落到错误元素上。
+ */
+const clickProbe = await page.evaluate(() => {
+  const item = document.querySelector('.se-item');
+  if (!item) return { error: '无条目' };
+
+  // 命中测试：指定点位的最顶层元素是哪个
+  const probe = (x, y) => {
+    const el = document.elementFromPoint(x, y);
+    if (!el) return 'null';
+    // 向上查找是否落在 hit 或 link 内
+    const inHit = Boolean(el.closest('.se-hit'));
+    const inLink = Boolean(el.closest('.se-link'));
+    return `${el.tagName.toLowerCase()}${el.className ? '.' + String(el.className).split(' ')[0] : ''}${
+      inHit ? ' [命中hit]' : inLink ? ' [命中link]' : ' [未命中]'
+    }`;
+  };
+
+  const r = item.getBoundingClientRect();
+  const numBox = item.querySelector('.se-num').getBoundingClientRect();
+  const bodyBox = item.querySelector('.se-body').getBoundingClientRect();
+  const linkBox = item.querySelector('.se-link').getBoundingClientRect();
+  const snipBox = item.querySelector('.se-snippet')?.getBoundingClientRect() ?? null;
+
+  return {
+    onNumber: probe(numBox.left + numBox.width / 2, numBox.top + numBox.height / 2),
+    onTitle: probe(linkBox.left + linkBox.width / 2, linkBox.top + linkBox.height / 2),
+    onCite: probe(bodyBox.left + 20, bodyBox.top + 6),
+    onSnippet: snipBox
+      ? probe(snipBox.left + 20, snipBox.top + Math.min(10, snipBox.height / 2))
+      : 'n/a',
+    // 条目内的空白间隙（grid gap），最容易漏掉
+    onGap: probe(r.left + r.width / 2, r.top + r.height - 3),
+  };
+});
+
+/**
+ * 实测大标题的交互状态：平时无框 → 悬停虚线框 → 聚焦无框 → 失焦复原。
+ * 悬停与聚焦都用真实鼠标/键盘事件触发，不去读 cssRules
+ * （页面脚本无权访问样式表，会抛 SecurityError）。
+ */
+const queryInput = page.locator('.se-query');
+const outlineOf = () =>
+  page.evaluate(() => {
+    const el = document.querySelector('.se-query');
+    const cs = getComputedStyle(el);
+    return {
+      style: cs.outlineStyle,
+      width: cs.outlineWidth,
+      color: cs.outlineColor,
+      borderBottom: cs.borderBottomWidth,
+    };
+  });
+
+const queryState = { normal: await outlineOf() };
+
+// 悬停：真实移动鼠标
+await queryInput.hover();
+await page.waitForTimeout(120);
+queryState.hover = await outlineOf();
+
+// 聚焦：真实点击
+await queryInput.click();
+await page.waitForTimeout(120);
+queryState.focused = await outlineOf();
+queryState.statOnFocus = await page.locator('.se-stat').textContent();
+
+// 改动后失焦：应立即复原。
+// 用键盘 Tab 移开焦点，比点击特定坐标可靠（不依赖元素位置与配色）。
+await page.keyboard.type('被用户改过的内容');
+const typed = await queryInput.inputValue();
+await page.keyboard.press('Tab');
+await page.waitForTimeout(150);
+queryState.typedValue = typed;
+queryState.afterBlurValue = await queryInput.inputValue();
+queryState.statAfterBlur = await page.locator('.se-stat').textContent();
+queryState.restored = queryState.afterBlurValue !== typed;
 
 const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
 await page.screenshot({ path: join(root, '.build', shot), fullPage: true });
@@ -192,12 +273,16 @@ console.log(`  统计：${after.style.stat}`);
 console.log(`  序号栏：${after.style.numbers} 个，首个「${after.style.firstNumber}」`);
 console.log('=== 调整点验证 ===');
 console.log(
-  `  1 整条可点击：hit ${after.clickable.hitCount} 个（应=${before.results}）` +
-    `  se-body pointer-events=${after.clickable.bodyPointerEvents}（须为 auto）`,
+  `  1 整条可点击：hit ${after.clickable.hitCount} 个（应=${before.results}）`,
 );
 console.log(
-  `    首条 hit 地址：${after.clickable.firstHitHref?.slice(0, 50) ?? '(无)'}`,
+  `    pointer-events: body=${after.clickable.bodyPointerEvents}` +
+    ` num=${after.clickable.numPointerEvents} link=${after.clickable.linkPointerEvents}`,
 );
+console.log('    实测点击命中：');
+for (const [k, v] of Object.entries(clickProbe)) {
+  console.log(`      ${k}: ${v}`);
+}
 console.log(
   `  2 标题即搜索：页头内 input=${after.search.inMasthead}  isInput=${after.search.isInput}` +
     `  旧搜索框已移除=${after.search.oldSearchBarGone}`,
@@ -207,10 +292,26 @@ console.log(
     `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
 );
 console.log(`  4 合规链接残留：${after.complianceLinks}（应为 0）`);
+console.log('=== 大标题交互（真实鼠标/键盘事件）===');
+const fmt = (o) => `${o.style} ${o.width} ${o.color}`;
+console.log(`  平时：${fmt(queryState.normal)}  下边框=${queryState.normal.borderBottom}`);
+console.log(`  悬停：${fmt(queryState.hover)}`);
+console.log(`  聚焦：${fmt(queryState.focused)}  提示「${queryState.statOnFocus}」`);
+console.log(
+  `  失焦：输入过「${queryState.typedValue}」→ 还原为「${queryState.afterBlurValue}」` +
+    `  成功=${queryState.restored}  提示「${queryState.statAfterBlur}」`,
+);
 console.log('=== 原站残留检查（应全为 0）===');
 for (const [k, v] of Object.entries(after.leftovers)) {
   console.log(`  ${v === 0 ? 'OK  ' : 'FAIL'} ${k}: ${v}`);
 }
+
+// 点击命中：除标题区应命中 link 外，其余区域都应命中 hit
+const clickOk =
+  clickProbe.onNumber?.includes('[命中hit]') &&
+  clickProbe.onCite?.includes('[命中hit]') &&
+  clickProbe.onSnippet?.includes('[命中hit]') &&
+  clickProbe.onTitle?.includes('[命中link]');
 
 const pass =
   foreignErrors.length === 0 &&
@@ -220,9 +321,16 @@ const pass =
   after.style.masthead &&
   after.style.numbers === before.results &&
   after.clickable.hitCount === before.results &&
+  clickOk &&
   after.search.inMasthead &&
   after.search.oldSearchBarGone &&
   after.complianceLinks === 0 &&
+  queryState.restored &&
+  queryState.hover.style === 'dashed' &&
+  // 聚焦时虚线框应「不可见」：宽度归零即为不可见
+  // （样式写成 0 dashed transparent 而非 none，是为清掉浏览器默认焦点环）
+  queryState.focused.width === '0px' &&
+  queryState.normal.borderBottom === '0px' &&
   Object.values(after.leftovers).every((v) => v === 0);
 
 console.log(`\n样例页原有报错（与本项目无关）：${baselineErrors.length} 条`);

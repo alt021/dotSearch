@@ -93,8 +93,16 @@ body.se-stripped {
 }
 
 /*
- * 输入框沿用大标题的排版，但去掉原生外观。
- * 平时看是一个标题，聚焦后下方出现强调色下划线提示可编辑。
+ * 输入框沿用大标题排版，去掉原生外观。
+ *
+ * 交互提示的设计意图：
+ *   平时      —— 就是一个普通标题，无任何装饰
+ *   悬停      —— 虚线框出现，提示「这里可以输入」
+ *   聚焦      —— 虚线框消失，避免干扰实际输入
+ *   失焦      —— 立即还原为原查询词（见 runner 中的 blur 处理）
+ *
+ * 因此刻意不用聚焦时的下划线：那会与输入状态混淆，
+ * 且占据布局空间导致文字跳动。
  */
 .se-query {
   display: block;
@@ -109,19 +117,30 @@ body.se-stripped {
   color: inherit;
   background: transparent;
   border: 0;
-  border-bottom: 3px solid transparent;
   border-radius: 0;
   appearance: none;
   word-break: break-word;
+  /* 虚线框用 outline 实现，不占布局空间，避免悬停时文字抖动 */
+  outline: 1px dashed transparent;
+  outline-offset: 0.35rem;
+  transition: outline-color 0.12s ease;
 }
 
 .se-query::placeholder {
   color: var(--se-placeholder);
 }
 
+/* 悬停：虚线框提示可编辑 */
+.se-query:hover {
+  outline-color: var(--se-muted);
+}
+
+/* 聚焦：移除虚线框（此时已在输入，不需再提示）。
+   宽度需显式归零——部分浏览器对 type=search 有默认 outline 宽度，
+   只置 outline: none 时会留下 3px 的透明轮廓，偶发显示为焦点环。 */
 .se-query:focus {
-  outline: none;
-  border-bottom-color: var(--se-accent);
+  outline: 0 dashed transparent;
+  outline-color: transparent;
 }
 
 /* 隐藏 type=search 的原生清除按钮，保持版面干净 */
@@ -166,6 +185,11 @@ body.se-stripped {
  * stretched link：透明锚点铺满整条，实现「整块可点」。
  * 相比给整块包 <a>，保留了标题内独立链接的语义
  * （中键新标签、复制链接、右键菜单均正常），也不妨碍选中文本。
+ *
+ * 层序（自下而上）：.se-hit → .se-num/.se-body → .se-link
+ * hit 在最底层，因此整条任何位置都能命中它；
+ * 内容层虽在上方，但设 pointer-events: none 让点击穿透给 hit，
+ * 文本选择则交给 ::selection 与 .se-link 自行处理。
  */
 .se-hit {
   position: absolute;
@@ -194,19 +218,28 @@ body.se-stripped {
 }
 
 /*
- * 内容层需盖在 stretched link 之上，否则无法选中文本。
- * 不使用 pointer-events: none —— 那会牺牲文本选择与复制，
- * 是这类「整块可点」实现最常见的坑。
- * 标题链接自身 z-index 更高，优先响应点击。
+ * 内容层设 pointer-events: none，让点击穿透到下层的 hit，
+ * 这样序号、来源、摘要、空白处都可点击。
+ *
+ * 注意：直接用 z-index 抬高内容层是错的 —— 那会让内容挡住 hit，
+ * 只有落在两个 grid 单元的缝隙（即 se-hit 本身）才能点击。
+ * 早期实现正是踩了这个坑，只有部分区域可点。
+ *
+ * 文本选择：内容层不可接收事件，但 ::selection 仍生效，
+ * 用户拖选时浏览器会绕过 pointer-events 选中文字。
  */
 .se-num,
 .se-body {
   position: relative;
   z-index: 1;
+  pointer-events: none;
 }
 
+/* 标题链接需真实可点：中键新标签、复制链接、右键菜单都依赖它 */
 .se-link {
+  position: relative;
   z-index: 2;
+  pointer-events: auto;
 }
 
 /* 序号：等宽数字，形成纵向韵律。
