@@ -174,6 +174,13 @@ body.se-stripped {
   gap: 0 1rem;
   padding: 1.75rem 1.5rem 1.75rem 0;
   border-top: 1px solid var(--se-line);
+  /*
+   * 整条卡片不可选中。
+   * 整块可点的条目上，拖选会选出一片无意义的文本，且与点击跳转冲突。
+   * 需要链接地址时仍可用右键「复制链接地址」。
+   */
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .se-item:first-child {
@@ -184,7 +191,7 @@ body.se-stripped {
 /*
  * stretched link：透明锚点铺满整条，实现「整块可点」。
  * 相比给整块包 <a>，保留了标题内独立链接的语义
- * （中键新标签、复制链接、右键菜单均正常），也不妨碍选中文本。
+ * （中键新标签、复制链接、右键菜单均正常）。
  *
  * 层序（自下而上）：.se-hit → .se-num/.se-body → .se-link
  * hit 在最底层，因此整条任何位置都能命中它；
@@ -202,19 +209,12 @@ body.se-stripped {
   outline-offset: -2px;
 }
 
-/* 悬停时用左侧红色标记线示意可点击，替代卡片阴影 */
+/*
+ * 悬停反馈：仅保留极淡背景。
+ * 左侧红色标记线已移除——瑞士风格强调排版本身，不靠色块装饰。
+ */
 .se-item:hover {
   background: color-mix(in srgb, var(--se-fg) 3%, transparent);
-}
-
-.se-item:hover::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0.75rem;
-  bottom: 0.75rem;
-  width: 2px;
-  background: var(--se-accent);
 }
 
 /*
@@ -225,8 +225,8 @@ body.se-stripped {
  * 只有落在两个 grid 单元的缝隙（即 se-hit 本身）才能点击。
  * 早期实现正是踩了这个坑，只有部分区域可点。
  *
- * 文本选择：内容层不可接收事件，但 ::selection 仍生效，
- * 用户拖选时浏览器会绕过 pointer-events 选中文字。
+ * 文本选择：整条已设 user-select: none，拖选不会产生高亮块。
+ * min-width: 0 让 grid 单元可收缩，否则长 URL / 摘要会撑破布局。
  */
 .se-num,
 .se-body {
@@ -235,11 +235,41 @@ body.se-stripped {
   pointer-events: none;
 }
 
+.se-body {
+  min-width: 0;
+}
+
 /* 标题链接需真实可点：中键新标签、复制链接、右键菜单都依赖它 */
 .se-link {
   position: relative;
   z-index: 2;
   pointer-events: auto;
+  color: inherit;
+  text-decoration: none;
+  /* 下划线置于文字下方，用细线而非颜色变化表示可点击 */
+  background-image: linear-gradient(var(--se-accent), var(--se-accent));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0 2px;
+  transition: background-size 0.18s ease, color 0.18s ease;
+}
+
+/*
+ * 悬停反馈作用于整条卡片：标题标红并展开下划线。
+ * 整块可点的条目上，用户视线落在卡片任意位置都应得到同一反馈，
+ * 而不只是鼠标正好压在那几个字的标题上。
+ */
+.se-item:hover .se-link {
+  color: var(--se-accent);
+  background-size: 100% 2px;
+}
+
+/* 键盘聚焦（Tab 到链接）时同样给出反馈 */
+.se-link:focus-visible {
+  color: var(--se-accent);
+  background-size: 100% 2px;
+  outline: 2px solid var(--se-accent);
+  outline-offset: 2px;
 }
 
 /* 序号：等宽数字，形成纵向韵律。
@@ -251,10 +281,6 @@ body.se-stripped {
   line-height: 1.5rem;
   color: var(--se-accent);
   font-variant-numeric: tabular-nums;
-}
-
-.se-body {
-  min-width: 0;
 }
 
 .se-cite {
@@ -276,21 +302,7 @@ body.se-stripped {
   letter-spacing: -0.01em;
 }
 
-.se-link {
-  color: inherit;
-  text-decoration: none;
-  /* 下划线置于文字下方，用细线而非颜色变化表示可点击 */
-  background-image: linear-gradient(var(--se-accent), var(--se-accent));
-  background-repeat: no-repeat;
-  background-position: 0 100%;
-  background-size: 0 2px;
-  transition: background-size 0.18s ease;
-}
-
-.se-link:hover {
-  color: var(--se-accent);
-  background-size: 100% 2px;
-}
+/* .se-link 的排版、悬停与聚焦规则统一在层序段落中定义 */
 
 .se-snippet {
   margin: 0;

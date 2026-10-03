@@ -58,7 +58,12 @@ const { port } = server.address();
 const pageUrl = `http://127.0.0.1:${port}/bing.html?q=test`;
 
 const browser = await chromium.launch({ executablePath: CHROME });
-const page = await browser.newPage({ colorScheme: process.argv.includes('--dark') ? 'dark' : 'light' });
+// 视口需足够高：默认 1280×720 会让测试目标落到视口外，
+// 导致 mouse.move 的坐标无效、悬停断言误判为「未生效」。
+const page = await browser.newPage({
+  colorScheme: process.argv.includes('--dark') ? 'dark' : 'light',
+  viewport: { width: 1280, height: 1000 },
+});
 
 const errors = [];
 /**
@@ -162,6 +167,16 @@ const after = await page.evaluate(() => ({
   complianceLinks: [...document.querySelectorAll('a[href]')].filter((a) =>
     /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
   ).length,
+  // 视觉调整：红线移除 / 选择禁用 / 悬停反馈扩展
+  visual: {
+    // ::before 伪元素内容应为空（即无红线）
+    beforeContent: getComputedStyle(document.querySelector('.se-item'), '::before').content,
+    itemUserSelect: getComputedStyle(document.querySelector('.se-item')).userSelect,
+    titleUserSelect: getComputedStyle(
+      document.querySelector('.se-title'),
+    ).userSelect,
+    snippetUserSelect: getComputedStyle(document.querySelector('.se-snippet')).userSelect,
+  },
   // 原站跳转链接应已被解析为真实地址
   redirectLeakCount: [...document.querySelectorAll('.se-link')].filter((a) =>
     a.href.includes('bing.com/ck/a'),
@@ -227,12 +242,13 @@ const outlineOf = () =>
 const queryState = { normal: await outlineOf() };
 
 // 悬停：真实移动鼠标
-await queryInput.hover();
+const queryBox = await queryInput.boundingBox();
+await page.mouse.move(queryBox.x + queryBox.width / 2, queryBox.y + queryBox.height / 2);
 await page.waitForTimeout(120);
 queryState.hover = await outlineOf();
 
 // 聚焦：真实点击
-await queryInput.click();
+await page.mouse.click(queryBox.x + queryBox.width / 2, queryBox.y + queryBox.height / 2);
 await page.waitForTimeout(120);
 queryState.focused = await outlineOf();
 queryState.statOnFocus = await page.locator('.se-stat').textContent();
@@ -247,6 +263,49 @@ queryState.typedValue = typed;
 queryState.afterBlurValue = await queryInput.inputValue();
 queryState.statAfterBlur = await page.locator('.se-stat').textContent();
 queryState.restored = queryState.afterBlurValue !== typed;
+
+/**
+ * 实测悬停反馈：鼠标停在**非标题区域**（如序号或摘要）时，
+ * 标题也应变红并展开下划线 —— 即反馈作用于整条卡片，而非仅标题本身。
+ *
+ * 注意：必须用 mouse.move（按坐标）而非 locator.hover()。
+ * 因为 .se-hit 铺满整条且 z-index 最高，Playwright 的 hover 会认为
+ * 元素被遮挡而反复重试超时 —— 这本身恰好证明 hit 层工作正常。
+ * 但它也意味着 hover 事件需要真实的鼠标移动才能触发。
+ */
+/** 悬停到指定坐标并读取标题样式（先移开再移入，确保触发 mouseover） */
+const hoverTitleAt = async (x, y) => {
+  // 先移到远处再回来：避免 Chromium 合并相邻 mouse.move 而不派发 mouseover
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(60);
+  await page.mouse.move(x, y);
+  await page.waitForTimeout(220);
+  return page.evaluate(() => {
+    const s = getComputedStyle(document.querySelector('.se-link'));
+    return { color: s.color, size: s.backgroundSize };
+  });
+};
+
+const hoverProbe = await page.evaluate(() => {
+  const s = getComputedStyle(document.querySelector('.se-link'));
+  return { color: s.color, size: s.backgroundSize };
+});
+
+const box = await page.locator('.se-item').first().boundingBox();
+
+// 关键：页面此前已被滚动到下方做点击测试，boundingBox() 返回的是
+// 相对文档的坐标，直接拿去 mouse.move 会落到视口之外（实测 y 为负）。
+// 先滚回顶部并等待布局稳定，确保目标在视口内且坐标为视口坐标。
+await page.evaluate(() => window.scrollTo(0, 0));
+await page.waitForTimeout(200);
+
+const numBox = await page.locator('.se-item .se-num').first().boundingBox();
+const snipBox = await page.locator('.se-item .se-snippet').first().boundingBox();
+
+// 悬停到摘要（非标题区域）
+const onSnippet = await hoverTitleAt(snipBox.x + 30, snipBox.y + snipBox.height / 2);
+const onNum = await hoverTitleAt(numBox.x + numBox.width / 2, numBox.y + numBox.height / 2);
+const onOutside = await hoverTitleAt(5, 5);
 
 const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
 await page.screenshot({ path: join(root, '.build', shot), fullPage: true });
@@ -292,6 +351,34 @@ console.log(
     `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
 );
 console.log(`  4 合规链接残留：${after.complianceLinks}（应为 0）`);
+console.log('=== 视觉调整 ===');
+console.log(
+  `  红线 ::before content：${after.visual.beforeContent}（应为 none 或 normal）`,
+);
+console.log(
+  `  选择禁用：item=${after.visual.itemUserSelect} title=${after.visual.titleUserSelect}` +
+    ` snippet=${after.visual.snippetUserSelect}`,
+);
+// 强调色随配色模式而变：浅色 #E30613 → rgb(227,6,19)，深色提亮为 #ff2a34 → rgb(255,42,52)。
+// 因此不能硬编码单一值，应取「未悬停色」以外的那个红色，或直接按模式判断。
+const ACCENT_LIGHT = 'rgb(227, 6, 19)';
+const ACCENT_DARK = 'rgb(255, 42, 52)';
+const isDark = process.argv.includes('--dark');
+const ACCENT = isDark ? ACCENT_DARK : ACCENT_LIGHT;
+const hoverOk = onSnippet.color === ACCENT && onSnippet.size.startsWith('100%');
+console.log(
+  `  悬停非标题区（摘要）→ 标题 ${onSnippet.color} 下划线 ${onSnippet.size}` +
+    `  ${hoverOk ? 'OK' : '未生效'}`,
+);
+console.log(
+  `  悬停序号 → 标题 ${onNum.color} 下划线 ${onNum.size}` +
+    `  ${onNum.color === ACCENT ? 'OK' : '未生效'}`,
+);
+console.log(
+  `  移出卡片 → 标题 ${onOutside.color} 下划线 ${onOutside.size}` +
+    `  ${onOutside.color === hoverProbe.color ? '已复原 OK' : '未复原'}`,
+);
+console.log(`  初始未悬停：${hoverProbe.color} 下划线 ${hoverProbe.size}`);
 console.log('=== 大标题交互（真实鼠标/键盘事件）===');
 const fmt = (o) => `${o.style} ${o.width} ${o.color}`;
 console.log(`  平时：${fmt(queryState.normal)}  下边框=${queryState.normal.borderBottom}`);
@@ -331,6 +418,14 @@ const pass =
   // （样式写成 0 dashed transparent 而非 none，是为清掉浏览器默认焦点环）
   queryState.focused.width === '0px' &&
   queryState.normal.borderBottom === '0px' &&
+  // 红线已移除：::before 无内容生成
+  (after.visual.beforeContent === 'none' || after.visual.beforeContent === 'normal') &&
+  // 整条不可选中
+  after.visual.itemUserSelect === 'none' &&
+  after.visual.titleUserSelect === 'none' &&
+  // 悬停非标题区时标题同样变红 + 展开下划线
+  hoverOk &&
+  onNum.color === ACCENT &&
   Object.values(after.leftovers).every((v) => v === 0);
 
 console.log(`\n样例页原有报错（与本项目无关）：${baselineErrors.length} 条`);
