@@ -22,8 +22,10 @@ const { chromium } = require(
 );
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
+// 第一个非 flag 参数才当作样例路径，避免 --dark 之类被误认成路径
 const samplePath =
-  process.argv[2] ?? 'C:/Users/AmeXE2/AppData/Local/Temp/bing_sample.html';
+  process.argv.slice(2).find((a) => !a.startsWith('--')) ??
+  'C:/Users/AmeXE2/AppData/Local/Temp/bing_sample.html';
 
 /** 本机 Chromium（沙箱内无法直接启动，需在沙箱外运行本脚本） */
 const CHROME = 'C:/Users/AmeXE2/Documents/Programs/Chromite/chrome.exe';
@@ -52,10 +54,11 @@ const server = createServer((req, res) => {
 });
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const { port } = server.address();
-const pageUrl = `http://127.0.0.1:${port}/bing.html`;
+// 带上 q 参数，让页头能显示查询词与统计（样例快照的 URL 本就没有）
+const pageUrl = `http://127.0.0.1:${port}/bing.html?q=test`;
 
 const browser = await chromium.launch({ executablePath: CHROME });
-const page = await browser.newPage();
+const page = await browser.newPage({ colorScheme: process.argv.includes('--dark') ? 'dark' : 'light' });
 
 const errors = [];
 /**
@@ -124,6 +127,15 @@ const after = await page.evaluate(() => ({
     cite: (document.querySelector('.se-item .se-cite')?.textContent ?? '').slice(0, 50),
     snippet: (document.querySelector('.se-item .se-snippet')?.textContent ?? '').slice(0, 60),
   },
+  // 瑞士风格所需的结构元素
+  style: {
+    masthead: Boolean(document.querySelector('.se-masthead')),
+    brand: Boolean(document.querySelector('.se-brand .se-mark')),
+    query: document.querySelector('.se-query')?.textContent ?? null,
+    stat: (document.querySelector('.se-stat')?.textContent ?? '').slice(0, 30),
+    numbers: document.querySelectorAll('.se-item .se-num').length,
+    firstNumber: document.querySelector('.se-item .se-num')?.textContent ?? null,
+  },
   // 原站跳转链接应已被解析为真实地址
   redirectLeakCount: [...document.querySelectorAll('.se-link')].filter((a) =>
     a.href.includes('bing.com/ck/a'),
@@ -131,7 +143,8 @@ const after = await page.evaluate(() => ({
   pagination: document.querySelectorAll('.se-pagination .se-page').length,
 }));
 
-await page.screenshot({ path: join(root, '.build', 'strip-result.png'), fullPage: true });
+const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
+await page.screenshot({ path: join(root, '.build', shot), fullPage: true });
 
 console.log('=== 精简前 ===');
 console.log(`  DOM 节点：${before.nodes}`);
@@ -149,6 +162,11 @@ console.log(`  来源：${after.firstResult.cite}`);
 console.log(`  摘要：${after.firstResult.snippet}`);
 console.log(`  链接：${after.firstResult.href?.slice(0, 60) ?? '(无)'}`);
 console.log(`  残留跳转链接：${after.redirectLeakCount}（应为 0）`);
+console.log('=== 瑞士风格结构 ===');
+console.log(`  页头：${after.style.masthead}  标识块：${after.style.brand}`);
+console.log(`  查询词：${after.style.query || '(样例页无 q 参数)'}`);
+console.log(`  统计：${after.style.stat}`);
+console.log(`  序号栏：${after.style.numbers} 个，首个「${after.style.firstNumber}」`);
 console.log('=== 原站残留检查（应全为 0）===');
 for (const [k, v] of Object.entries(after.leftovers)) {
   console.log(`  ${v === 0 ? 'OK  ' : 'FAIL'} ${k}: ${v}`);
@@ -159,13 +177,15 @@ const pass =
   after.rootExists &&
   after.results === before.results &&
   after.redirectLeakCount === 0 &&
+  after.style.masthead &&
+  after.style.numbers === before.results &&
   Object.values(after.leftovers).every((v) => v === 0);
 
 console.log(`\n样例页原有报错（与本项目无关）：${baselineErrors.length} 条`);
 if (baselineErrors.length) console.log(`  ${baselineErrors[0].slice(0, 90)}`);
 console.log(`注入后新增报错：${foreignErrors.length === 0 ? '无' : foreignErrors.join(' | ')}`);
 console.log(pass ? '✅ 验证通过' : '❌ 验证失败');
-console.log('截图：.build/strip-result.png');
+console.log('截图：.build/' + shot);
 
 await browser.close();
 server.close();

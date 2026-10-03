@@ -71,6 +71,8 @@ export const stripToResults: Feature = {
     root.id = ROOT_ID;
     root.dataset.query = query;
 
+    // 页头：瑞士风格以「元信息块 + 粗规则线」建立页面起点
+    root.appendChild(buildMasthead(query, results.length, engine));
     root.appendChild(buildSearchBar(query, engine));
 
     const main = document.createElement('main');
@@ -105,16 +107,66 @@ export const stripToResults: Feature = {
   },
 };
 
+/**
+ * 构建页头。
+ * 瑞士风格典型的杂志式页头：刊名式标识 + 查询词 + 统计信息，
+ * 底部以粗规则线收束，替代任何色块或阴影装饰。
+ */
+function buildMasthead(query: string, count: number, engine: EngineAdapter): HTMLElement {
+  const head = document.createElement('header');
+  head.className = 'se-masthead';
+
+  const brand = document.createElement('p');
+  brand.className = 'se-brand';
+  // 用强调色方块作为唯一点缀，呼应瑞士国旗
+  const mark = document.createElement('span');
+  mark.className = 'se-mark';
+  mark.setAttribute('aria-hidden', 'true');
+  brand.append(mark, document.createTextNode(`${engine.name} — 检索`));
+  head.appendChild(brand);
+
+  if (query) {
+    const q = document.createElement('h1');
+    q.className = 'se-query';
+    q.textContent = query;
+    head.appendChild(q);
+  }
+
+  const stat = document.createElement('p');
+  stat.className = 'se-stat';
+  stat.textContent = `找到 ${count} 条结果`;
+  head.appendChild(stat);
+
+  return head;
+}
+
 /** 构建结果列表 */
 function buildResultList(results: SearchResult[]): HTMLElement {
   const list = document.createElement('ol');
   list.className = 'se-list';
 
-  for (const result of results) {
+  results.forEach((result, i) => {
     const item = document.createElement('li');
     item.className = 'se-item';
 
-    // 标题
+    // 左栏：序号。瑞士风格用等宽数字建立纵向韵律，替代装饰性图形
+    const num = document.createElement('span');
+    num.className = 'se-num';
+    num.textContent = String(i + 1).padStart(2, '0');
+    item.appendChild(num);
+
+    // 右栏：内容
+    const body = document.createElement('div');
+    body.className = 'se-body';
+
+    // 来源：置于标题之上，用等宽小字，是瑞士风格典型的元信息前置手法
+    if (result.displayUrl) {
+      const cite = document.createElement('cite');
+      cite.className = 'se-cite';
+      cite.textContent = result.displayUrl;
+      body.appendChild(cite);
+    }
+
     const heading = document.createElement('h2');
     heading.className = 'se-title';
     const anchor = document.createElement('a');
@@ -127,26 +179,18 @@ function buildResultList(results: SearchResult[]): HTMLElement {
       anchor.rel = 'noopener noreferrer';
     }
     heading.appendChild(anchor);
-    item.appendChild(heading);
+    body.appendChild(heading);
 
-    // 来源 URL
-    if (result.displayUrl) {
-      const cite = document.createElement('cite');
-      cite.className = 'se-cite';
-      cite.textContent = result.displayUrl;
-      item.appendChild(cite);
-    }
-
-    // 摘要
     if (result.snippet) {
       const desc = document.createElement('p');
       desc.className = 'se-snippet';
       desc.textContent = result.snippet;
-      item.appendChild(desc);
+      body.appendChild(desc);
     }
 
+    item.appendChild(body);
     list.appendChild(item);
-  }
+  });
 
   return list;
 }

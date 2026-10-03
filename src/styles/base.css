@@ -1,98 +1,238 @@
 /**
- * 结果页重写的基础样式
+ * 瑞士风格（International Typographic Style）基础样式
  *
- * 原站样式已被全部移除，这里从零定义排版。
- * 视觉重设计尚未开始，本文件先保证「内容可读、排版可用」，
- * 后续迭代在此基础上替换。
+ * 设计原则：
+ *   1. 层级由排版建立，而非装饰 —— 字号、字重、字距的对比就是结构
+ *   2. 严格网格 —— 左侧等宽栏放序号，右侧内容栏对齐，条目间用规则线切割
+ *   3. 色彩极度克制 —— 纯黑白 + 唯一强调红（#E30613，瑞士国旗色）
+ *   4. 拒绝装饰 —— 无圆角、无阴影、无渐变、无悬浮抬升效果
+ *   5. 留白即呼吸 —— 大间距是版面的组成部分，不是浪费
+ *
+ * 后续精修可在此基础上迭代，本文件保持单一来源，不散落到其他位置。
  */
 
 body.se-stripped {
   margin: 0;
   padding: 0;
-  background: Canvas;
-  color: CanvasText;
-  font: 16px/1.6 system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+  background: var(--se-bg);
+  color: var(--se-fg);
+  font: 400 16px/1.55 'Helvetica Neue', Helvetica, Arial, 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 强调色：瑞士红，全站唯一彩色。深浅色下保持同一色相。 */
+:root {
+  --se-accent: #e30613;
+  --se-bg: #fff;
+  --se-fg: #111;
+  --se-rule: #111;
+  --se-line: #e0e0e0;
+  --se-muted: #767676;
+  --se-snippet: #333;
+  --se-placeholder: #a8a8a8;
+}
+
+/* 跟随系统深色偏好。深色下仍保持瑞士风格的高对比与纯色强调。 */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --se-bg: #0d0d0d;
+    --se-fg: #f2f2f2;
+    --se-rule: #f2f2f2;
+    --se-line: #2e2e2e;
+    --se-muted: #9a9a9a;
+    --se-snippet: #d4d4d4;
+    --se-placeholder: #6a6a6a;
+  }
+
+  /* 深色下红色略提亮以保证对比度 */
+  :root {
+    --se-accent: #ff2a34;
+  }
 }
 
 #se-root {
-  max-width: 52rem;
+  max-width: 62rem;
   margin: 0 auto;
-  padding: 2rem 1.25rem 4rem;
+  padding: 3.5rem 2rem 6rem;
+}
+
+/* ---- 页头 ---- */
+
+.se-masthead {
+  margin-bottom: 2.5rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 3px solid var(--se-rule);
+}
+
+.se-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0 0 1.75rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--se-muted);
+}
+
+/* 唯一的装饰：纯色方块 */
+.se-mark {
+  width: 0.7rem;
+  height: 0.7rem;
+  background: var(--se-accent);
+  flex: none;
+}
+
+.se-query {
+  margin: 0 0 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.025em;
+  word-break: break-word;
+}
+
+.se-stat {
+  margin: 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+  color: var(--se-muted);
 }
 
 /* ---- 搜索框 ---- */
 
+/* 无边框容器：只用输入框自身下方的细线，避免整行横贯的视觉重量 */
 .se-search {
   display: flex;
-  gap: 0.5rem;
-  margin-bottom: 2.5rem;
+  align-items: flex-end;
+  gap: 1.5rem;
+  margin-bottom: 3rem;
 }
 
 .se-search-input {
   flex: 1;
-  padding: 0.7rem 1rem;
+  min-width: 0;
+  padding: 0.5rem 0 0.6rem;
   font: inherit;
+  font-size: 1.125rem;
   color: inherit;
   background: transparent;
-  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
-  border-radius: 8px;
+  border: 0;
+  border-bottom: 2px solid var(--se-rule);
+  border-radius: 0;
 }
 
-.se-search-input:focus-visible {
-  outline: 2px solid Highlight;
-  outline-offset: 1px;
+.se-search-input::placeholder {
+  color: var(--se-placeholder);
+}
+
+.se-search-input:focus {
+  outline: none;
+  border-bottom-color: var(--se-accent);
 }
 
 .se-search-btn {
-  padding: 0.7rem 1.4rem;
+  padding: 0 0 0.6rem;
   font: inherit;
-  color: Canvas;
-  background: Highlight;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--se-muted);
+  background: transparent;
   border: 0;
-  border-radius: 8px;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-/* ---- 结果条目 ---- */
+.se-search-btn:hover {
+  color: var(--se-accent);
+  border-bottom-color: var(--se-accent);
+}
+
+/* ---- 结果条目：左序号栏 + 右内容栏 ---- */
 
 .se-list {
-  display: flex;
-  flex-direction: column;
-  gap: 1.75rem;
   margin: 0;
   padding: 0;
   list-style: none;
+  counter-reset: none;
 }
 
-.se-item > .se-title {
-  margin: 0 0 0.25rem;
-  font-size: 1.15rem;
-  font-weight: 600;
-  line-height: 1.4;
+.se-item {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr;
+  gap: 0 1rem;
+  padding: 1.75rem 0;
+  border-top: 1px solid var(--se-line);
+}
+
+.se-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+/* 序号：等宽数字，形成纵向韵律。
+   line-height 与下方来源行高对齐，使序号与来源文字落在同一基线上。 */
+.se-num {
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.5rem;
+  color: var(--se-accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.se-body {
+  min-width: 0;
+}
+
+.se-cite {
+  display: block;
+  margin: 0 0 0.45rem;
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.8125rem;
+  font-style: normal;
+  line-height: 1.5;
+  color: var(--se-muted);
+  overflow-wrap: anywhere;
+}
+
+.se-title {
+  margin: 0 0 0.4rem;
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
 }
 
 .se-link {
   color: inherit;
   text-decoration: none;
+  /* 下划线置于文字下方，用细线而非颜色变化表示可点击 */
+  background-image: linear-gradient(var(--se-accent), var(--se-accent));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 0 2px;
+  transition: background-size 0.18s ease;
 }
 
 .se-link:hover {
-  text-decoration: underline;
-}
-
-.se-cite {
-  display: block;
-  margin-bottom: 0.35rem;
-  font-size: 0.85rem;
-  font-style: normal;
-  opacity: 0.6;
-  overflow-wrap: anywhere;
+  color: var(--se-accent);
+  background-size: 100% 2px;
 }
 
 .se-snippet {
   margin: 0;
-  opacity: 0.85;
+  max-width: 46em;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--se-snippet);
 }
 
 /* ---- 分页 ---- */
@@ -100,29 +240,56 @@ body.se-stripped {
 .se-pagination {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 3rem;
+  gap: 0 1.75rem;
+  margin-top: 3.5rem;
+  padding-top: 1.5rem;
+  border-top: 3px solid var(--se-rule);
 }
 
 .se-page {
-  padding: 0.4rem 0.8rem;
-  border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
-  border-radius: 6px;
-  color: inherit;
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.875rem;
+  color: var(--se-muted);
   text-decoration: none;
 }
 
 .se-page:hover {
-  background: color-mix(in srgb, CanvasText 8%, transparent);
+  color: var(--se-accent);
 }
 
 /* ---- 其他 ---- */
 
 .se-empty {
-  opacity: 0.7;
+  margin: 0;
+  padding: 3rem 0;
+  border-top: 1px solid var(--se-line);
+  color: var(--se-muted);
 }
 
 /* 直答区等附加区块 */
 .se-extra {
-  margin-bottom: 2rem;
+  margin-bottom: 2.5rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--se-line);
+}
+
+/* ---- 响应式：窄屏收起序号栏 ---- */
+
+@media (max-width: 600px) {
+  #se-root {
+    padding: 2rem 1.25rem 4rem;
+  }
+
+  .se-query {
+    font-size: 1.875rem;
+  }
+
+  .se-item {
+    grid-template-columns: 2.25rem 1fr;
+    gap: 0 0.75rem;
+  }
+
+  .se-title {
+    font-size: 1.125rem;
+  }
 }
