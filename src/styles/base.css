@@ -210,12 +210,10 @@ body.se-stripped {
 }
 
 /*
- * 悬停反馈：仅保留极淡背景。
- * 左侧红色标记线已移除——瑞士风格强调排版本身，不靠色块装饰。
+ * 悬停反馈：只靠标题变红 + 下划线展开（见下方 .se-item:hover .se-link）。
+ * 不再给整条加背景色 —— 那会让版面出现块状色差，
+ * 且与「整条可点」的透明覆盖层叠加后显得浑浊。
  */
-.se-item:hover {
-  background: color-mix(in srgb, var(--se-fg) 3%, transparent);
-}
 
 /*
  * 内容层设 pointer-events: none，让点击穿透到下层的 hit，
@@ -317,19 +315,25 @@ body.se-stripped {
 .se-pagination {
   display: flex;
   flex-wrap: wrap;
-  gap: 0 1.75rem;
+  /* 页码与当前页的盒模型尺寸一致，按基线对齐才不会上下错位 */
+  align-items: baseline;
+  gap: 0 1.25rem;
   margin-top: 3.5rem;
   padding-top: 1.5rem;
   border-top: 3px solid var(--se-rule);
 }
 
+/*
+ * 页码与「当前页」共用同一套盒模型（1px 边框 + 相同内边距），
+ * 两者只差边框与衬底的颜色 —— 否则切换页码时尺寸会跳一下。
+ */
 .se-page {
-  padding: 0.15rem 0;
+  padding: 0.15rem 0.5rem;
   font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
   font-size: 0.875rem;
   color: var(--se-muted);
   text-decoration: none;
-  border-bottom: 1px solid transparent;
+  border: 1px solid transparent;
 }
 
 .se-page:hover {
@@ -337,10 +341,19 @@ body.se-stripped {
   border-bottom-color: var(--se-accent);
 }
 
-/* 当前页：强调色 + 底部粗线，区别于可跳转的页码 */
+/*
+ * 当前页：用黑色描边 + 浅衬底表示，而不是强调色 + 下划线。
+ *
+ * 这样两种语义各有各的表达方式：
+ *   可跳转的页码 → 红色（悬停）
+ *   当前所在页   → 形状（边框与衬底）
+ * 若都用红色，反而分不清哪个能点。
+ * 颜色取 --se-fg，深色主题下会自动反转，无需另写一套。
+ */
 .se-page-current {
-  color: var(--se-accent);
-  border-bottom-color: var(--se-accent);
+  color: var(--se-fg);
+  background: color-mix(in srgb, var(--se-fg) 7%, transparent);
+  border-color: var(--se-fg);
 }
 
 /* ---- 其他 ---- */
