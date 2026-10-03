@@ -402,8 +402,11 @@ const toolbarState = async () =>
     const bar = document.getElementById('se-toolbar');
     if (!bar) return { exists: false };
     const panel = bar.querySelector('.se-toolbar-panel');
+    const tab = bar.querySelector('.se-toolbar-tab');
+    const scrim = bar.parentElement?.querySelector('.se-toolbar-scrim');
     const links = [...bar.querySelectorAll('.se-toolbar-link')];
     const cs = getComputedStyle(bar);
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
     return {
       exists: true,
       peek: bar.classList.contains('se-peek'),
@@ -411,12 +414,16 @@ const toolbarState = async () =>
       panelInert: panel.hasAttribute('inert'),
       // transform 的最终计算值（matrix 形式），用于确认真在屏幕外
       transform: cs.transform,
-      tabWidth: Math.round(
-        bar.querySelector('.se-toolbar-tab').getBoundingClientRect().width,
-      ),
+      tabWidth: Math.round(tab.getBoundingClientRect().width),
+      tabDisplay: getComputedStyle(tab).display,
+      // 灰色英文小标签应已全部移除
+      hintCount: bar.querySelectorAll('.se-toolbar-link-hint').length,
+      // 黑色叠加层
+      scrimOpacity: scrimCs ? Number(scrimCs.opacity) : null,
+      scrimClickable: scrimCs ? scrimCs.pointerEvents === 'auto' : null,
       linkCount: links.length,
       links: links.map((a) => ({
-        label: (a.querySelector('.se-toolbar-link-label')?.textContent ?? '').trim(),
+        label: (a.textContent ?? '').trim(),
         href: a.getAttribute('href') ?? '',
         target: a.getAttribute('target') ?? '',
         rel: a.getAttribute('rel') ?? '',
@@ -424,7 +431,27 @@ const toolbarState = async () =>
     };
   });
 
+/** 在距右边缘 distance 处派发一次 mousemove，返回是否已露出 */
+const peekAt = async (distance) =>
+  page.evaluate((d) => {
+    document.dispatchEvent(
+      new MouseEvent('mousemove', {
+        clientX: window.innerWidth - d,
+        clientY: 400,
+        bubbles: true,
+      }),
+    );
+    return document.getElementById('se-toolbar')?.classList.contains('se-peek') ?? false;
+  }, distance);
+
 const barClosed = await toolbarState();
+
+/*
+ * 触发区大小：距边缘 30px 仍应露出（旧实现阈值为 16px），
+ * 距边缘 200px 则应收回（收回阈值 140px，留出余量避免边界抖动）。
+ */
+const peekAt30 = await peekAt(30);
+const peekAt200 = await peekAt(200);
 
 /*
  * 鼠标移到屏幕右边缘 → 应露出。
@@ -666,6 +693,7 @@ console.log(`  [探针] ${JSON.stringify(edgeProbe)}`);
 console.log('  [露出触发方式] ' + peekVia);
 console.log('  [展开方式] ' + openVia + (openAttempts > 0 ? '（尝试 ' + openAttempts + ' 次）' : ''));
 console.log('  [点击目标] ' + tabPoint.hit + ' @(' + tabPoint.x + ',' + tabPoint.y + ')');
+console.log('  [触发区] 距边缘30px露出=' + peekAt30 + '  距边缘200px露出=' + peekAt200);
 console.log(
   `  收起：存在=${barClosed.exists} peek=${barClosed.peek} open=${barClosed.open}` +
     ` 面板inert=${barClosed.panelInert}`,
@@ -677,6 +705,10 @@ console.log(
 console.log(
   `  点击展开：open=${barOpen.open} peek=${barOpen.peek}` +
     ` 面板inert=${barOpen.panelInert}  transform=${barOpen.transform}`,
+);
+console.log(
+  `  展开态：提示条display=${barOpen.tabDisplay}  灰字标签数=${barOpen.hintCount}` +
+    `  叠加层opacity=${barOpen.scrimOpacity} 可点=${barOpen.scrimClickable}`,
 );
 for (const l of barOpen.links) {
   console.log(`     ${l.label} → ${l.href.slice(0, 58)}  target=${l.target} rel=${l.rel}`);
@@ -753,6 +785,16 @@ const toolbarOk =
   barOpen.open === true &&
   barOpen.panelInert === false && // 展开后须可交互
   barOpen.linkCount === 3 &&
+  // 触发区已放大：距边缘 30px 仍露出，远离后收回
+  peekAt30 === true &&
+  peekAt200 === false &&
+  // 展开后不再显示左侧黑色提示条
+  barOpen.tabDisplay === 'none' &&
+  // 灰色英文小标签已移除
+  barOpen.hintCount === 0 &&
+  // 黑色叠加层生效且可点（承担点击外部收起）
+  barOpen.scrimOpacity === 1 &&
+  barOpen.scrimClickable === true &&
   barOpen.links.every((l) => l.href.startsWith('http') && l.target === '_blank') &&
   barAfterEsc.open === false;
 
@@ -792,6 +834,58 @@ console.log(`注入后新增报错：${foreignErrors.length === 0 ? '无' : fore
 console.log(pass ? '✅ 验证通过' : '❌ 验证失败');
 console.log('截图：.build/' + shot);
 
+/* ==========================================================================
+   已登录分支专项验证
+   --------------------------------------------------------------------------
+   上面跑的是样例快照，它处于**未登录**状态，只能覆盖「点击登录 Bing」。
+   已登录分支必须单独构造：重新载入页面，在注入脚本之前把顶栏改造成
+   已登录的样子（头像 aria-label 换成用户名、头像图片显示出来），
+   再检查账户入口是否变为「已作为 X 登录」并指向微软账户官网。
+
+   这一步在真实的未登录环境下无法自然触发，因此用构造的 DOM 覆盖。
+   ========================================================================== */
+await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+
+const signedInShape = await page.evaluate(() => {
+  const avatar = document.getElementById('id_a');
+  const profile = document.getElementById('id_p');
+  const submit = document.querySelector('#id_l input[type="submit"]');
+  if (!avatar) return '缺少 #id_a，无法构造';
+  avatar.setAttribute('aria-label', '张小明');
+  if (profile) {
+    profile.setAttribute('style', '');
+    profile.setAttribute('data-alt', '张小明');
+    profile.setAttribute('src', 'https://example.com/a.png');
+  }
+  if (submit) submit.setAttribute('value', '张小明');
+  return 'ok';
+});
+
+await page.evaluate((src) => {
+  globalThis.__SE_FORCE_ENGINE__ = 'bing';
+  new Function(src)();
+}, code);
+await page.waitForTimeout(1500);
+
+const signedInEntry = await page.evaluate(() => {
+  const link = document.querySelector('#se-toolbar .se-toolbar-link');
+  return link
+    ? { label: link.textContent.trim(), href: link.getAttribute('href') }
+    : null;
+});
+
+console.log('=== 已登录分支 ===');
+console.log(`  构造顶栏：${signedInShape}`);
+console.log(`  账户入口：${signedInEntry?.label ?? '(缺失)'} → ${signedInEntry?.href ?? ''}`);
+
+const signedInOk =
+  signedInShape === 'ok' &&
+  signedInEntry !== null &&
+  /^已作为 .+ 登录$/.test(signedInEntry.label) &&
+  signedInEntry.href.startsWith('https://account.microsoft.com');
+
+console.log(signedInOk ? '  ✅ 已登录分支正确' : '  ❌ 已登录分支不符预期');
+
 await browser.close();
 server.close();
-process.exit(pass ? 0 : 1);
+process.exit(pass && signedInOk ? 0 : 1);

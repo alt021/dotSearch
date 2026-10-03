@@ -406,7 +406,31 @@ body.se-stripped {
   pointer-events: none;
 }
 
+/*
+ * 黑色叠加层：展开时压暗页面，把工具栏区域与内容区分开。
+ *
+ * 它同时承担「点击面板外收起」的落点。若不加这一层，
+ * 那么点击外部就是真的点在页面上，极易误触结果链接。
+ * 平时 opacity 0 且不接收事件，不干扰正常浏览。
+ */
+.se-toolbar-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgb(0 0 0 / 45%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+
+.se-toolbar-layer.se-scrim-on .se-toolbar-scrim {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .se-toolbar {
+  /* 提示条宽度：露出位移与条宽共用此变量，避免两处写死后失配 */
+  --se-tab-w: 1.25rem;
+
   /* absolute 才能被裁切层约束；fixed 后代不受祖先 overflow 影响 */
   position: absolute;
   top: 0;
@@ -421,7 +445,7 @@ body.se-stripped {
 
 /* 露出：鼠标贴近右边缘时的提示态 */
 .se-toolbar.se-peek {
-  transform: translateX(calc(100% - 1rem));
+  transform: translateX(calc(100% - var(--se-tab-w)));
 }
 
 /* 展开 */
@@ -435,7 +459,7 @@ body.se-stripped {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
+  width: var(--se-tab-w);
   padding: 0;
   background: var(--se-fg);
   border: 0;
@@ -464,9 +488,13 @@ body.se-stripped {
   transition: transform 0.22s ease;
 }
 
-/* 展开后箭头反向，提示可收起 */
-.se-toolbar.se-open .se-toolbar-chevron {
-  transform: rotate(-135deg) translate(0.06rem, -0.06rem);
+/*
+ * 展开后隐藏整条提示条：
+ * 此时左侧会紧贴面板，留着这条深色竖线反而像分隔线、显得多余；
+ * 收起改由面板内的「关闭」按钮、Esc 与点击叠加层完成。
+ */
+.se-toolbar.se-open .se-toolbar-tab {
+  display: none;
 }
 
 /* ---- 面板 ---- */
@@ -522,11 +550,9 @@ body.se-stripped {
 
 /* 条目之间用细线切割，与结果列表同一语言 */
 .se-toolbar-link {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 0.75rem;
   padding: 0.9rem 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
   color: inherit;
   text-decoration: none;
   border-bottom: 1px solid var(--se-line);
@@ -536,25 +562,12 @@ body.se-stripped {
   border-bottom: 0;
 }
 
-.se-toolbar-link-label {
-  font-size: 0.9375rem;
-  font-weight: 500;
-}
-
-.se-toolbar-link-hint {
-  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
-  font-size: 0.6875rem;
-  letter-spacing: 0.04em;
-  color: var(--se-muted);
-}
-
-/* 悬停：标红 + 下划线展开，与结果条目保持一致 */
-.se-toolbar-link:hover .se-toolbar-link-label {
+/* 悬停：标红 + 下划线（跟随文字宽度，与结果条目语汇一致） */
+.se-toolbar-link:hover {
   color: var(--se-accent);
-  background-image: linear-gradient(var(--se-accent), var(--se-accent));
-  background-repeat: no-repeat;
-  background-position: 0 100%;
-  background-size: 100% 2px;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
 }
 
 .se-toolbar-link:focus-visible {

@@ -1,6 +1,7 @@
 import type { Feature } from '../types/feature.js';
 import type { EngineAdapter, SearchResult } from '../types/engine.js';
 import { log } from '../core/env.js';
+import { captureBingSession } from './bing-session.js';
 
 /**
  * 结果页重写：把 Bing 结果页替换为「搜索框 + 干净的结果列表」。
@@ -141,6 +142,14 @@ export const stripToResults: Feature = {
      *   3. 剔除备案号、隐私政策等合规链接
      * 清理后若已无实质内容，则整体丢弃，不留空壳。
      */
+    /*
+     * 必应会话状态也必须在清空前采集：
+     * 判据来自顶栏（#id_a / #id_l / #id_p），而顶栏正是被本功能清掉的。
+     * 右侧工具栏在页面重建后才挂载，那时已无从读取，
+     * 故在此取一次并缓存，供其使用。
+     */
+    captureBingSession();
+
     const answerNodes = Array.from(
       document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
     ).filter((node) => pruneAnswerNode(node));

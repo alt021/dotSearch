@@ -16,12 +16,13 @@
  */
 import type { Feature } from '../types/feature.js';
 import { log } from '../core/env.js';
+import { getBingSession } from './bing-session.js';
 
 /** 侧边栏根元素 id */
 export const SIDEBAR_ID = 'se-toolbar';
 
 /** 鼠标进入距右边缘该宽度内时露出侧边栏 */
-const PEEK_ON = 16;
+const PEEK_ON = 48;
 
 /**
  * 收回阈值，明显大于露出阈值 —— 这是刻意的「迟滞」。
@@ -30,39 +31,59 @@ const PEEK_ON = 16;
  * 那条提示会从指针底下溜走，反而点不中。
  * 拉开两个阈值后：一旦露出就稳住，直到指针离开较远才收回。
  */
-const PEEK_OFF = 64;
+const PEEK_OFF = 140;
+
+/** 未登录时的登录入口（实测会落到 login.live.com 的登录页） */
+const SIGN_IN_URL =
+  'https://www.bing.com/fd/auth/signin?action=interactive' +
+  '&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F';
+
+/** 已登录时的去向：微软账户官网 */
+const MICROSOFT_ACCOUNT_URL = 'https://account.microsoft.com/';
 
 interface ToolLink {
   label: string;
-  hint: string;
   href: string;
 }
 
 /**
- * 三个入口地址均已实测验证（会正确落到 Bing 自家页面）：
- *   - 登录端点 → login.live.com，页面标题「登录」
- *   - Rewards  → rewards.bing.com/dashboard，未登录时转登录页
- *   - 设置     → bing.com/account/general，页面标题「搜索 - 设置」
+ * 后两个入口的地址均已实测验证（会正确落到 Bing 自家页面）：
+ *   - Rewards → rewards.bing.com/dashboard，未登录时转登录页
+ *   - 设置   → bing.com/account/general，页面标题「搜索 - 设置」
+ *
+ * 账户入口的文案与去向是**动态的**，取决于当前是否已登录必应，
+ * 故不在此处写死，由 buildAccountLink() 生成。
  */
 const TOOL_LINKS: ToolLink[] = [
   {
-    label: '必应账户登录',
-    hint: 'Account',
-    href:
-      'https://www.bing.com/fd/auth/signin?action=interactive' +
-      '&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F',
-  },
-  {
     label: 'Microsoft Rewards',
-    hint: 'Rewards',
     href: 'https://rewards.bing.com/dashboard',
   },
   {
     label: '搜索设置',
-    hint: 'Settings',
     href: 'https://www.bing.com/account/general',
   },
 ];
+
+/**
+ * 生成账户入口。
+ *
+ * 已登录 → 「已作为 X 登录」，去微软账户官网
+ * 未登录 → 「点击登录 Bing」，去必应登录端点
+ *
+ * 会话状态在页面被重写前采集（见 bing-session.ts），
+ * 因为判据所在的顶栏已被清掉。
+ */
+function buildAccountLink(): ToolLink {
+  const session = getBingSession();
+  if (session.signedIn) {
+    return {
+      label: session.name ? `已作为 ${session.name} 登录` : '已登录必应',
+      href: MICROSOFT_ACCOUNT_URL,
+    };
+  }
+  return { label: '点击登录 Bing', href: SIGN_IN_URL };
+}
 
 /** 当前挂载的清理函数；卸载时统一执行 */
 let cleanups: Array<() => void> = [];
@@ -118,6 +139,15 @@ function buildSidebar(): HTMLElement {
   const layer = document.createElement('div');
   layer.className = 'se-toolbar-layer';
 
+  /*
+   * 黑色叠加层：展开时压暗页面，把工具栏区域与内容区分开。
+   * 同时也是「点击面板外收起」的落点 —— 它自身不接收事件时会
+   * 落到页面上，那样点击外部就变成了点击页面，容易误触链接。
+   */
+  const scrim = document.createElement('div');
+  scrim.className = 'se-toolbar-scrim';
+  scrim.setAttribute('aria-hidden', 'true');
+
   const bar = document.createElement('aside');
   bar.id = SIDEBAR_ID;
   bar.className = 'se-toolbar';
@@ -166,36 +196,29 @@ function buildSidebar(): HTMLElement {
   nav.className = 'se-toolbar-nav';
   nav.setAttribute('aria-label', '必应功能入口');
 
-  for (const link of TOOL_LINKS) {
+  for (const link of [buildAccountLink(), ...TOOL_LINKS]) {
     const a = document.createElement('a');
     a.className = 'se-toolbar-link';
     a.href = link.href;
     // 与结果链接保持一致：新标签页打开，且不泄漏 referrer
     a.target = '_blank';
     a.rel = 'noopener noreferrer';
-
-    const label = document.createElement('span');
-    label.className = 'se-toolbar-link-label';
-    label.textContent = link.label;
-
-    const hint = document.createElement('span');
-    hint.className = 'se-toolbar-link-hint';
-    hint.textContent = link.hint;
-
-    a.append(label, hint);
+    a.textContent = link.label;
     nav.appendChild(a);
   }
 
   panel.append(head, nav);
   // tab 在前、panel 在后：收起时整块右移，恰好只留 tab 露在屏幕边缘
   bar.append(tab, panel);
-  layer.appendChild(bar);
+  // 叠加层排在工具栏之前，使其位于面板下方
+  layer.append(scrim, bar);
 
   return layer;
 }
 
 /** 绑定交互：边缘露出、点击展开、关闭与键盘操作 */
 function wireInteraction(bar: HTMLElement, off: Array<() => void>): void {
+  const layer = bar.parentElement;
   const tab = bar.querySelector<HTMLElement>('.se-toolbar-tab');
   const panel = bar.querySelector<HTMLElement>('.se-toolbar-panel');
   const close = bar.querySelector<HTMLElement>('.se-toolbar-close');
@@ -205,6 +228,8 @@ function wireInteraction(bar: HTMLElement, off: Array<() => void>): void {
 
   const setOpen = (open: boolean): void => {
     bar.classList.toggle('se-open', open);
+    // 叠加层随展开状态显隐；用类而不是 :has()，兼容性更稳
+    layer?.classList.toggle('se-scrim-on', open);
     // 关闭时一并清掉露出态，否则移开鼠标前会残留半开
     bar.classList.remove('se-peek');
     tab.setAttribute('aria-expanded', String(open));
