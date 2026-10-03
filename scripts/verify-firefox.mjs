@@ -81,6 +81,7 @@ for (const c of CASES) {
     await ff.send('WebDriver:ExecuteScript', {
       script: `return {
         bPag: document.querySelectorAll('.b_pag').length,
+        offMax: Math.max(0, ...[...document.querySelectorAll("a[href]")].map(a=>(a.getAttribute("href")||"").match(/[?&]first=(\d+)/)).filter(Boolean).map(m=>Number(m[1]))),
         bAlgo: document.querySelectorAll('li.b_algo').length,
       };`,
       args: [],

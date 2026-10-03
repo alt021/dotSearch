@@ -69,7 +69,7 @@ export const stripToResults: Feature = {
     return source.length > 0;
   },
 
-  onNavigate({ engine, query }) {
+  async onNavigate({ engine, query }) {
     // 幂等保护：Runner 已通过 needsRebuild 决定是否执行，
     // 若根容器仍在说明无需重建，直接返回。
     if (document.getElementById(ROOT_ID)) {
@@ -85,6 +85,15 @@ export const stripToResults: Feature = {
       log.warn(`结果容器未找到（${engine.resultContainerSelector}），无法重写`);
       return;
     }
+
+    /*
+     * 关键：分页通常晚于结果容器渲染。
+     * 早期版本等到 #b_results 就立即提取分页，此时分页尚未生成，
+     * 提取为 0 → 触发「补齐第 1 页」→ 页面上只剩一个孤立的「1」。
+     * 这正是「原本 3 页只显示 1 页」的原因。
+     * 故在此短暂等待分页线索出现（拿到即返回，无分页时才等满超时）。
+     */
+    await waitForPagination(1_000);
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
@@ -172,7 +181,7 @@ export const stripToResults: Feature = {
     // 而 console.info 需开启调试等级才可见，跨浏览器排查时容易看不到。
     log.warn(
       `[重写完成] DOM ${before} → ${after}，结果 ${results.length} 条，` +
-        `分页 ${pages.length} 项（${engine.name}，查询「${query}」）`,
+        `分页 ${pages.length} 项（${lastPaginationDebug}）`,
     );
   },
 };
@@ -313,172 +322,284 @@ interface PageLink {
   label: string;
   /** 目标地址；当前页为 null */
   href: string | null;
-  /** 完整的无障碍标签（如「第 2 页」「下一页」） */
+  /** 无障碍标签（如「第 2 页」） */
   ariaLabel: string;
   /** 是否为当前所在页 */
   current: boolean;
 }
 
-/**
- * 从原站分页控件提取页码。
+/*
+ * ============ 分页提取 ============
  *
- * 真实结构（实测）：
- *   li.b_pag > nav > ul.sb_pagF > li > a[aria-label="第 N 页"]
+ * ## 为什么不能依赖原站的分页 DOM
  *
- * 三个要点：
- *   - 当前页的 <a> **没有 href**（只有 .sb_pagS 标记），不能按 a[href] 过滤，否则当前页会丢失
- *   - 无障碍标签在 aria-label 上，文本可能被截断或为图标（下一页是 div.sw_next）
- *   - **分页容器在 Chromium 与 Firefox 中的 DOM 结构不同**（非标准嵌套：
- *     <li> 内含 <link>、所在 <ol> 提前闭合），后代选择器在 Firefox 上会失配。
- *     故先定位容器、再在容器内做多策略查询，任一命中即可。
- */
-/**
- * 从原站提取分页。
+ * 换过三轮判据都失败了：
+ *   1. 后代选择器 .b_pag .sb_pagF a  → Firefox 解析差异导致失配
+ *   2. .b_pag 容器 + aria-label       → 用户页面上两者都不存在
+ *   3. a[href*="first="]              → 翻页链接可能无 href（JS 驱动）
  *
- * ## 为什么不用容器选择器做主判据
+ * 根本教训：分页的 DOM 结构、class 名、aria-label 文案，甚至「有没有
+ * href」，都随语言 / 地区 / 布局 / A-B 实验而变，都不是可靠判据。
  *
- * 实测发现 Bing 的分页容器在不同页面/语言/布局下差异很大：
- *   - 桌面中文版：`<li class="b_pag"><nav><ul class="sb_pagF">…`
- *   - 其他情形：`.b_pag` 不存在、aria-label 也不是「第 N 页」格式
- *   （用户实测页面上 `.b_pag=0`、`a[aria-label^="第"]=0`）
+ * ## 现方案：只读取「有几页」，链接自己构造
  *
- * 但**分页链接的 URL 特征始终稳定**：翻页必带 `first=` 参数
- * （Bing 用它表示结果偏移量，第 N 页为 `first=(N-1)*10+1`）。
- * 因此以 `first=` 为主判据，容器/aria-label 仅作辅助与兜底。
+ * 唯一跨场景稳定的信息是 first= 这个结果偏移量
+ * （第 N 页 = first=(N-1)*10+1）。它同时出现在：
+ *   - 翻页链接的 href 里
+ *   - 页面内联脚本的配置数据里
  *
- * 另外 aria-label 的文案随语言变化（中文「第 N 页」、英文「Page N」），
- * 故正则同时覆盖中英文。
+ * 因此从「DOM 链接」与「整份 HTML」两处收集偏移量，推出最大页数，
+ * 再用当前 URL 自己拼出每一页的地址。
+ * 这样即使原站链接完全不可用，分页依然可用。
  */
 
-/** 分页链接的稳定标识：URL 含 first= 参数 */
-const PAGE_HREF_RE = /[?&]first=\d+/;
+/** 从 URL 串中提取 first= 偏移量 */
+const FIRST_PARAM_RE = /[?&]first=(\d+)/g;
 
-/** 页码文案：中英文 + 纯数字 + 翻页箭头 */
-const PAGE_LABEL_RE =
-  /^\d+$|^(上一页|下一页|上页|下页|首页|尾页|末页|Next|Previous|Prev|First|Last|›|‹|»|«|>|<|»)$/i;
+/** 分页可能出现的容器，用于等待其渲染完成 */
+export const PAGINATION_HINT_SELECTOR = '.b_pag, .sb_pagF, .sb_pag, a[href*="first="]';
 
-/** aria-label 页码文案：中英文 */
-const PAGE_ARIA_RE = /^(第\s*\d+\s*页|Page\s*\d+|上一页|下一页|上页|下页|首页|尾页|Next|Previous|Prev|First|Last)$/i;
+/** 单页结果数（Bing 默认 10）；由偏移量差值自动校正 */
+const DEFAULT_PAGE_SIZE = 10;
 
-function extractPaginationLinks(): PageLink[] {
-  /*
-   * 步骤 1：先用 URL 特征找候选链接。
-   * 刻意在整页范围搜索而非某个容器内 —— 因为容器结构不可靠。
-   */
-  const allAnchors = Array.from(document.querySelectorAll<HTMLAnchorElement>('a[href]'));
-  const byHref = allAnchors.filter((a) => {
-    const href = a.getAttribute('href') ?? '';
-    return PAGE_HREF_RE.test(href);
+/** 页码上限，避免异常数据撑爆版面 */
+const MAX_PAGE_COUNT = 50;
+
+/**
+ * 等待分页线索出现（分页常晚于结果容器渲染）。
+ *
+ * 已存在则立即返回；否则用 MutationObserver 监听，出现即返回；
+ * 超时后返回（原站本就没有分页时属正常情况）。
+ * 之所以用观察而非固定 sleep，是为了不无谓拖慢重写速度。
+ */
+function waitForPagination(timeout: number): Promise<void> {
+  if (document.querySelector(PAGINATION_HINT_SELECTOR)) return Promise.resolve();
+
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    let timer = 0;
+
+    // 先声明观察者，finish 中才能安全引用（函数声明会提升）
+    const observer = new MutationObserver(() => {
+      if (document.querySelector(PAGINATION_HINT_SELECTOR)) finish();
+    });
+
+    function finish(): void {
+      if (settled) return;
+      settled = true;
+      observer.disconnect();
+      window.clearTimeout(timer);
+      resolve();
+    }
+
+    timer = window.setTimeout(finish, timeout);
+    observer.observe(document.documentElement, { childList: true, subtree: true });
   });
+}
 
-  // 步骤 2：容器/aria-label 作为补充来源（覆盖 URL 无 first= 的边界情形）
-  const containers = Array.from(document.querySelectorAll('.b_pag, .sb_pagF, .sb_pag'));
-  const byAria: HTMLAnchorElement[] = [];
-  for (const c of containers) {
-    for (const a of Array.from(c.querySelectorAll<HTMLAnchorElement>('a'))) {
-      const aria = (a.getAttribute('aria-label') ?? '').trim();
-      if (PAGE_ARIA_RE.test(aria) && !byHref.includes(a)) byAria.push(a);
+/** 收集页面中出现的所有 first= 偏移量 */
+function collectPageOffsets(): number[] {
+  const offsets = new Set<number>();
+
+  // 来源 1：带 first= 的翻页链接（最可靠）
+  for (const a of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    const raw = a.getAttribute('href') ?? '';
+    // 带 g 标志的正则是有状态的，复用前必须重置 lastIndex
+    FIRST_PARAM_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FIRST_PARAM_RE.exec(raw))) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) offsets.add(n);
     }
   }
 
-  const pages: PageLink[] = [];
-  const seen = new Set<string>();
+  // 来源 2：整份 HTML 兜底，覆盖 onclick / 内联脚本 / 非 a 元素。
+  // 仅在来源 1 无收获时启用，避免把无关参数误当页码。
+  if (offsets.size === 0) {
+    const html = document.documentElement.innerHTML;
+    FIRST_PARAM_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FIRST_PARAM_RE.exec(html))) {
+      const n = Number(m[1]);
+      if (Number.isFinite(n)) offsets.add(n);
+    }
+  }
 
-  for (const a of [...byHref, ...byAria]) {
-    const ariaLabel = (a.getAttribute('aria-label') ?? '').trim();
-    const rawHref = a.getAttribute('href') ?? '';
+  return [...offsets].filter((n) => n >= 1).sort((a, b) => a - b);
+}
+
+/** 由偏移量差值推断每页条数（Bing 默认 10，但可被参数改变） */
+function detectPageSize(offsets: number[]): number {
+  // 相邻偏移量之差即每页条数；取最小正值以兼容不连续的偏移集合
+  const diffs: number[] = [];
+  for (let i = 1; i < offsets.length; i++) {
+    const prev = offsets[i - 1];
+    const cur = offsets[i];
+    if (prev === undefined || cur === undefined) continue;
+    const d = cur - prev;
+    if (d > 0) diffs.push(d);
+  }
+  return diffs.length > 0 ? Math.min(...diffs) : DEFAULT_PAGE_SIZE;
+}
+
+/** 第 1 页为 1；URL 不带 first= 即第 1 页 */
+function currentPageNumber(pageSize: number): number {
+  const raw = new URL(location.href).searchParams.get('first');
+  const offset = raw === null ? 1 : Number(raw);
+  if (!Number.isFinite(offset) || offset <= 1) return 1;
+  return Math.floor((offset - 1) / pageSize) + 1;
+}
+
+/*
+ * 偏移量 → 页码。
+ *
+ * 实测 Bing 的 first= 存在两种约定，同一站点不同渲染都可能出现：
+ *   1-based：第 2 页 first=11、第 3 页 first=21（每页 10 条）
+ *   0-based：第 2 页 first=10、第 3 页 first=20（每页 10 条）
+ * 用 floor(offset / pageSize) + 1 可同时覆盖两者：
+ *   floor(11/10)+1 = 2 ✓   floor(21/10)+1 = 3 ✓
+ *   floor(10/10)+1 = 2 ✓   floor(20/10)+1 = 3 ✓
+ * 若写成 floor((offset-1)/pageSize)+1，0-based 情形会少算一页。
+ */
+function offsetToPage(offset: number, pageSize: number): number {
+  return Math.floor(offset / pageSize) + 1;
+}
+
+/** 页码 → 偏移量（生成链接时用 1-based，Bing 两种约定都接受） */
+function pageToOffset(page: number, pageSize: number): number {
+  return (page - 1) * pageSize + 1;
+}
+
+/**
+ * 读取原站**渲染出来的页码数字**。
+ *
+ * 这是最权威的页数来源：翻页链接自身的文本就写着「2」「3」，
+ * 直接采信即可，无需从偏移量反推，避免偏移约定差异导致的偏差。
+ */
+function collectRenderedPageNumbers(): number[] {
+  const nums = new Set<number>();
+
+  for (const a of document.querySelectorAll<HTMLAnchorElement>('a')) {
+    const href = a.getAttribute('href') ?? '';
+    const text = (a.textContent ?? '').trim();
+    const aria = (a.getAttribute('aria-label') ?? '').trim();
+
+    // 页码文案：纯数字文本，或「第 N 页」/「Page N」
+    let numText: string | undefined;
+    if (/^\d{1,3}$/.test(text)) {
+      numText = text;
+    } else {
+      const m = aria.match(/^第\s*(\d{1,3})\s*页$/) ?? aria.match(/^Page\s*(\d{1,3})$/i);
+      numText = m?.[1];
+    }
+    if (!numText) continue;
 
     /*
-     * 文本取自 aria-label 或元素文本。
-     * Bing 的翻页按钮内部是 <div class="sw_next">下一页</div>，
-     * 元素文本可能为空或被裁剪，故两者互补。
+     * 必须确认这是分页链接，否则会把「10 条结果」之类的数字误当页码。
+     * 判据：带 first= 参数，或位于分页容器内。
      */
-    const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
-    let label = text || ariaLabel;
+    const paginated =
+      /[?&]first=\d+/.test(href) ||
+      a.closest('.b_pag, .sb_pagF, .sb_pag, nav[aria-label], nav[role="navigation"]') !== null;
+    if (!paginated) continue;
 
-    // 文本是图标或为空时，用 aria-label 反推页码
-    if (!PAGE_LABEL_RE.test(label) && PAGE_ARIA_RE.test(ariaLabel)) {
-      const m = ariaLabel.match(/\d+/);
-      label = m ? m[0] : label || ariaLabel;
+    const n = Number(numText);
+    if (n >= 1 && n <= 999) nums.add(n);
+  }
+
+  return [...nums].sort((a, b) => a - b);
+}
+
+/** 基于当前 URL 构造第 page 页的地址 */
+function buildPageHref(base: URL, page: number, pageSize: number): string {
+  const url = new URL(base.href);
+  if (page <= 1) {
+    // 第 1 页是默认值，去掉参数让地址更干净
+    url.searchParams.delete('first');
+  } else {
+    url.searchParams.set('first', String(pageToOffset(page, pageSize)));
+  }
+  return url.href;
+}
+
+/** 上一次分页提取的诊断描述，供完成日志输出 */
+let lastPaginationDebug = '';
+
+/**
+ * 最后的兜底：从分页容器里的纯数字元素推断总页数。
+ *
+ * 用于「翻页链接由 JS 驱动、没有 href，因而不含 first=」的布局。
+ * 仅作为没有偏移量线索时的替代方案，优先级最低。
+ */
+function collectNumericPageHints(): number[] {
+  const nums = new Set<number>();
+  const scopes = document.querySelectorAll(
+    '.b_pag, .sb_pagF, .sb_pag, nav[aria-label], nav[role="navigation"]',
+  );
+  for (const scope of scopes) {
+    for (const el of scope.querySelectorAll('a, span, div, li')) {
+      const t = (el.textContent ?? '').trim();
+      // 只看纯数字，且排除三位以上（避免把年份等数据误认成页码）
+      if (/^\d{1,3}$/.test(t)) nums.add(Number(t));
     }
-    if (!label) continue;
+  }
+  return [...nums];
+}
 
-    // 过滤非分页链接（如结果内的锚点恰好带 first=）
-    const looksLikePage =
-      PAGE_LABEL_RE.test(label) || PAGE_ARIA_RE.test(ariaLabel) || PAGE_HREF_RE.test(rawHref);
-    if (!looksLikePage) continue;
+/** 提取分页。返回空数组表示该页确实没有分页
+ * （结果不足一页，或原站未提供任何翻页线索）。
+ */
+function extractPaginationLinks(): PageLink[] {
+  const offsets = collectPageOffsets();
+  const pageSize = detectPageSize(offsets);
+  const base = new URL(location.href);
+  const current = currentPageNumber(pageSize);
 
-    // 当前页：Bing 不给当前页链接（无 href 或指向自身）
-    const isCurrent =
-      !rawHref ||
-      a.classList.contains('sb_pagS') ||
-      ariaLabel.includes('当前') ||
-      // href 的 first 值与当前 URL 相同即为当前页
-      (() => {
-        try {
-          const aFirst = new URL(rawHref, location.origin).searchParams.get('first');
-          const curFirst = new URL(location.href).searchParams.get('first');
-          return aFirst !== null && aFirst === curFirst;
-        } catch {
-          return false;
-        }
-      })();
+  /*
+   * 总页数按优先级推断，取各来源的最大值（偏保守，漏页比多页干扰小）：
+   *   1. 原站渲染出的页码数字 —— 最权威，直接写着「2」「3」
+   *   2. first= 偏移量反推 —— 覆盖页码文字非数字的情形
+   *   3. 分页容器内的纯数字 —— 覆盖链接无 href 的 JS 驱动布局
+   */
+  const renderedPages = collectRenderedPageNumbers();
+  const fromOffsets =
+    offsets.length > 0 ? offsetToPage(Math.max(...offsets), pageSize) : 0;
+  const numericHints =
+    renderedPages.length > 0 || fromOffsets > 0 ? [] : collectNumericPageHints();
 
-    // 去重：以页码文本为键
-    if (seen.has(label)) continue;
-    seen.add(label);
+  let maxPage = Math.max(
+    current,
+    renderedPages.length > 0 ? Math.max(...renderedPages) : 0,
+    fromOffsets,
+    numericHints.length > 0 ? Math.max(...numericHints) : 0,
+  );
 
+  // 完全没有任何线索：原站该页确实没有分页
+  if (maxPage <= 1 && renderedPages.length === 0 && fromOffsets === 0) {
+    lastPaginationDebug = '无分页线索（结果可能不足一页）';
+    return [];
+  }
+
+  maxPage = Math.min(maxPage, MAX_PAGE_COUNT);
+
+  lastPaginationDebug =
+    `页码[${renderedPages.join(',') || '-'}] ` +
+    `偏移[${offsets.join(',') || '-'}] 每页${pageSize}条 ` +
+    `当前第${current}页 总${maxPage}页`;
+
+  const pages: PageLink[] = [];
+  for (let n = 1; n <= maxPage; n++) {
+    const isCurrent = n === current;
     pages.push({
-      label,
-      href: rawHref ? safeAbsoluteUrl(rawHref) : null,
-      ariaLabel: ariaLabel || label,
+      label: String(n),
+      // 当前页不给链接（渲染为 span，语义上不可点）
+      href: isCurrent ? null : buildPageHref(base, n, pageSize),
+      ariaLabel: `第 ${n} 页`,
       current: isCurrent,
     });
   }
 
-  /*
-   * 排序：数字页码升序，翻页控件（下一页等）按原文顺序留在末尾。
-   * 这样第 1 页不会显示成「2 1 3」。
-   */
-  pages.sort((x, y) => {
-    const nx = Number(x.label);
-    const ny = Number(y.label);
-    if (Number.isFinite(nx) && Number.isFinite(ny)) return nx - ny;
-    if (Number.isFinite(nx)) return -1;
-    if (Number.isFinite(ny)) return 1;
-    return 0;
-  });
-
-  /*
-   * 修正：第 1 页的链接不带 first=（Bing 省略默认值），
-   * 因此靠 first= 只能找到第 2 页起的链接。
-   * 若结果里缺少「第 1 页」而当前正处于第 1 页，则补上，
-   * 避免导航从「2」开始、缺少回到首页的入口。
-   */
-  const hasPageOne = pages.some((p) => p.label === '1');
-  if (!hasPageOne) {
-    const currentFirst = new URL(location.href).searchParams.get('first');
-    const onFirstPage = currentFirst === null || Number(currentFirst) <= 1;
-    if (onFirstPage) {
-      pages.unshift({
-        label: '1',
-        href: null, // 当前页不可点击
-        ariaLabel: '第 1 页',
-        current: true,
-      });
-    }
-  }
-
   return pages;
-}
-
-/** 相对地址转绝对；解析失败时返回原值，避免整个流程崩掉 */
-function safeAbsoluteUrl(href: string): string {
-  try {
-    return new URL(href, location.origin).href;
-  } catch {
-    return href;
-  }
 }
 
 /** 构建分页导航 */
