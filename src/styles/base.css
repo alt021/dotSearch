@@ -58,6 +58,36 @@ body.se-stripped {
   padding: 3.5rem 2rem 6rem;
 }
 
+/* ---- 原站内容的隐藏容器 ---- */
+
+/*
+ * 重写时必应原有 DOM 被整体搬进这里，而不是删除。
+ *
+ * **为什么不用 display: none**：东方永页机这类自动翻页脚本要靠分析
+ * 页面结构来定位「下一页链接」与「主内容容器」，display:none 的子树
+ * 可能被它的可见性判断跳过，协同就断了。
+ * 因此改为「仍然渲染、但完全看不见」：
+ *
+ *   position: absolute + 1px + overflow: hidden
+ *     —— 不占据文档流位置，尺寸近零，内容被裁掉
+ *   contain: paint
+ *     —— 让其中的 position: fixed 后代以本容器为包含块。
+ *        否则页面里若有固定定位元素（如必应的悬浮顶栏），
+ *        它会摆脱裁剪浮到我们重写后的页面之上。
+ *   pointer-events: none
+ *     —— 不拦截鼠标（脚本主动 el.click() 不受影响）
+ */
+.se-source {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  contain: paint;
+  pointer-events: none;
+}
+
 /* ---- 页头 ---- */
 
 .se-masthead {

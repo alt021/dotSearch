@@ -104,6 +104,52 @@ npm run watch
 
 ---
 
+---
+
+## 与东方永页机（Pagetual）协同
+
+本脚本重写页面时会**保留必应原始 DOM**（移入隐藏容器 `#se-source`，
+不可见也不占位），而不是删除它 ——
+因为自动翻页脚本是「自驱动」的：它要靠当前页的结构去定位
+「下一页链接」与「主内容容器」。删掉这些锚点，它就无从下手。
+
+保留之后，永页机照常抓取并在隐藏容器里插入新一页的结果；
+本脚本监听它的 `postMessage`（`insert` / `lastPage`）并配合
+`MutationObserver`，把新结果**按本页样式追加到列表末尾**，
+页头的结果计数也会同步更新。
+
+### 如果自动识别不生效
+
+永页机的自动识别是启发式的，可能挑不到正确节点。
+本项目提供了一份显式规则，导入后即可确定下来：
+
+`docs/pagetualRule.json`
+
+```json
+[
+  {
+    "name": "必应 + 搜索体验增强",
+    "author": "search-enhance",
+    "example": "https://www.bing.com/search?q=test",
+    "url": "^https?://(www|cn)\\.bing\\.com/search",
+    "nextLink": "#se-source .sb_pagN, #se-source .sb_pagNext, #se-source a[aria-label=\"下一页\"]",
+    "pageElement": "#b_results"
+  }
+]
+```
+
+导入方式：永页机设置页 → 规则 → 导入上述 JSON。
+
+### 已知限制
+
+- 永页机若配置为 iframe 模式（规则里的 `action` 为 1 或 2），
+  新页内容会以 iframe 呈现，本脚本无法把它接进列表。
+  默认的「抓取静态 HTML 后插入」模式不受影响。
+- 协同生效后，页面的页码导航仍然保留，两种翻页方式并存。
+
+
+---
+
 ## 常见问题
 
 **脚本没反应？**
@@ -152,7 +198,10 @@ src/
 │   └── baidu.ts             ⏸ 预留
 ├── features/
 │   ├── index.ts             功能注册表（顺序即执行顺序）
-│   └── strip-to-results.ts  结果页重写（当前唯一功能）
+│   ├── strip-to-results.ts  结果页重写：重建页面 + 保留隐藏数据源
+│   ├── bing-session.ts      登录状态采集（须在清空前调用）
+│   ├── tool-menu.ts         页头「菜单」按钮与弹出面板
+│   └── pagetual-bridge.ts   永页机协同：把新加载的内容接进列表
 └── styles/base.css           重建后的基础样式
 
 scripts/

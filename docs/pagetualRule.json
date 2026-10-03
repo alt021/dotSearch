@@ -1,0 +1,10 @@
+[
+  {
+    "name": "必应 + 搜索体验增强",
+    "author": "search-enhance",
+    "example": "https://www.bing.com/search?q=test",
+    "url": "^https?://(www|cn)\\.bing\\.com/search",
+    "nextLink": "#se-source .sb_pagN, #se-source .sb_pagNext, #se-source a[aria-label=\"下一页\"]",
+    "pageElement": "#b_results"
+  }
+]

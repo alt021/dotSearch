@@ -114,17 +114,44 @@ const after = await page.evaluate(() => ({
   searchBarExists: Boolean(document.querySelector('.se-search')),
   inputValue: document.querySelector('.se-search-input')?.value ?? null,
   // 应当已被清除的原站元素
-  leftovers: {
-    header: document.querySelectorAll('#b_header').length,
-    footer: document.querySelectorAll('#b_footer').length,
-    dynRail: document.querySelectorAll('#b_dynRail').length,
-    copilot: document.querySelectorAll('#b_copilot_search_container').length,
-    adsMagazine: document.querySelectorAll('#b_ads_magazine_container').length,
-    trivia: document.querySelectorAll('#b_TriviaOverlay').length,
-    oldResultsShell: document.querySelectorAll('#b_results').length,
-    // 原站结果节点应已完全丢弃，改为重建
-    originalAlgo: document.querySelectorAll('li.b_algo').length,
-  },
+  /*
+   * 原站元素的「残留」检查。
+   *
+   * 语义已随架构调整：
+   *   旧：原站元素必须**完全不存在**（当时是直接清空 body）
+   *   新：原站元素不得出现在**可见区域**，但允许存在于隐藏数据源内
+   *
+   * 之所以保留隐藏数据源，是为了与东方永页机这类自驱动的自动翻页脚本
+   * 协同 —— 它们要靠原站结构定位下一页与插入点。详见 pagetual-bridge.ts。
+   * 因此这里按「不在 #se-source 内」计数，而不是全局计数。
+   */
+  leftovers: (() => {
+    const outsideSource = (sel) =>
+      [...document.querySelectorAll(sel)].filter((el) => !el.closest('#se-source')).length;
+    return {
+      header: outsideSource('#b_header'),
+      footer: outsideSource('#b_footer'),
+      dynRail: outsideSource('#b_dynRail'),
+      copilot: outsideSource('#b_copilot_search_container'),
+      adsMagazine: outsideSource('#b_ads_magazine_container'),
+      trivia: outsideSource('#b_TriviaOverlay'),
+      oldResultsShell: outsideSource('#b_results'),
+      // 原站结果节点不得出现在可见区，可见列表一律由重建的 .se-item 构成
+      originalAlgo: outsideSource('li.b_algo'),
+    };
+  })(),
+  // 隐藏数据源：应存在，且确实收纳了原站结果容器
+  source: (() => {
+    const el = document.getElementById('se-source');
+    return {
+      exists: Boolean(el),
+      resultsInside: el ? el.querySelectorAll('#b_results').length : 0,
+      // 不可见：尺寸近零（说明确实被裁掉了，没有漏到页面上）
+      size: el
+        ? `${Math.round(el.getBoundingClientRect().width)}x${Math.round(el.getBoundingClientRect().height)}`
+        : '-',
+    };
+  })(),
   // 重建后的结果内容
   firstResult: {
     title: (document.querySelector('.se-item .se-link')?.textContent ?? '').slice(0, 60),
@@ -163,9 +190,16 @@ const after = await page.evaluate(() => ({
     current: (document.querySelector('.se-page-current')?.textContent ?? '').slice(0, 10),
     currentTag: document.querySelector('.se-page-current')?.tagName ?? null,
   },
-  // 调整点 4：合规链接
-  complianceLinks: [...document.querySelectorAll('a[href]')].filter((a) =>
-    /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
+  /*
+   * 调整点 4：合规链接
+   *
+   * 同样按「可见区」计数：必应页脚的备案 / 隐私 / 条款链接随原站 DOM
+   * 一起被搬进了隐藏数据源，它们不该算作「可见区里的残留」。
+   */
+  complianceLinks: [...document.querySelectorAll('a[href]')].filter(
+    (a) =>
+      !a.closest('#se-source') &&
+      /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
   ).length,
   // 视觉调整：红线移除 / 选择禁用 / 悬停反馈扩展
   visual: {
@@ -639,7 +673,10 @@ console.log(
   `  失焦：输入过「${queryState.typedValue}」→ 还原为「${queryState.afterBlurValue}」` +
     `  成功=${queryState.restored}  提示「${queryState.statAfterBlur}」`,
 );
-console.log('=== 原站残留检查（应全为 0）===');
+console.log(
+  `  隐藏数据源 #se-source：存在=${after.source.exists} 内含结果容器=${after.source.resultsInside}  尺寸=${after.source.size}`,
+);
+console.log('=== 原站元素残留检查（可见区内应全为 0）===');
 for (const [k, v] of Object.entries(after.leftovers)) {
   console.log(`  ${v === 0 ? 'OK  ' : 'FAIL'} ${k}: ${v}`);
 }
@@ -716,13 +753,126 @@ const pass =
   // 悬停非标题区时标题同样变红 + 展开下划线
   hoverOk &&
   onNum.color === ACCENT &&
-  Object.values(after.leftovers).every((v) => v === 0);
+  // 可见区内不得有原站元素；隐藏数据源须存在且收纳了原站结果容器
+  Object.values(after.leftovers).every((v) => v === 0) &&
+  after.source.exists &&
+  after.source.resultsInside > 0;
 
 console.log(`\n样例页原有报错（与本项目无关）：${baselineErrors.length} 条`);
 if (baselineErrors.length) console.log(`  ${baselineErrors[0].slice(0, 90)}`);
 console.log(`注入后新增报错：${foreignErrors.length === 0 ? '无' : foreignErrors.join(' | ')}`);
+// 诊断：只列出未通过的断言项，便于定位（通过时不打印）
+for (const [k, v] of Object.entries({
+  foreignErrors: foreignErrors.length === 0,
+  rootExists: after.rootExists,
+  resultsEqual: after.results === before.results,
+  redirectLeak: after.redirectLeakCount === 0,
+  masthead: after.style.masthead,
+  numbers: after.style.numbers === before.results,
+  hitCount: after.clickable.hitCount === before.results,
+  clickOk,
+  linkOk,
+  menuOk,
+  inMasthead: after.search.inMasthead,
+  oldSearchBarGone: after.search.oldSearchBarGone,
+  complianceLinks: after.complianceLinks === 0,
+  restored: queryState.restored,
+  hoverStyle: queryState.hover.style === 'dashed',
+  focusedWidth: queryState.focused.width === '0px',
+  normalBorder: queryState.normal.borderBottom === '0px',
+  beforeContent: after.visual.beforeContent === 'none' || after.visual.beforeContent === 'normal',
+  itemSelect: after.visual.itemUserSelect === 'none',
+  titleSelect: after.visual.titleUserSelect === 'none',
+  hoverOk,
+  numColor: onNum.color === ACCENT,
+  leftovers: Object.values(after.leftovers).every((v) => v === 0),
+  sourceExists: after.source.exists === true,
+  sourceResultsInside: after.source.resultsInside > 0,
+})) {
+  if (v !== true) console.log(`  ✗ ${k} = ${JSON.stringify(v)}`);
+}
+
 console.log(pass ? '✅ 验证通过' : '❌ 验证失败');
 console.log('截图：.build/' + shot);
+
+/* ==========================================================================
+   永页机协同
+   --------------------------------------------------------------------------
+   模拟东方永页机的真实行为：
+     1. 它在当前页插入**新的结果容器**（不是往原容器里追加）
+     2. 插入完成后广播 postMessage 通知外界
+   这里照做，然后断言我们的列表把新结果接了上去。
+   ========================================================================== */
+const pagerBefore = await page.evaluate(() => {
+  const source = document.getElementById('se-source');
+  if (!source) return { ok: false, reason: '无隐藏数据源' };
+
+  // 构造「下一页」的容器，结构与必应一致，接在已有容器之后
+  const next = document.createElement('ol');
+  next.id = 'b_results';
+  next.innerHTML =
+    '<li class="b_algo">' +
+    '<h2><a href="https://example.com/p2-a">第二页结果甲</a></h2>' +
+    '<div class="b_attribution"><cite>example.com › p2-a</cite></div>' +
+    '<div class="b_caption"><p>这是第二页的第一条摘要。</p></div>' +
+    '</li>' +
+    '<li class="b_algo">' +
+    '<h2><a href="https://example.com/p2-b">第二页结果乙</a></h2>' +
+    '<div class="b_attribution"><cite>example.com › p2-b</cite></div>' +
+    '<div class="b_caption"><p>这是第二页的第二条摘要。</p></div>' +
+    '</li>';
+  source.appendChild(next);
+
+  const items = document.querySelectorAll('.se-item').length;
+  // 永页机的正式协作接口：插入完成后广播
+  window.postMessage({ command: 'pagetual', action: 'insert' }, '*');
+  return { ok: true, items, containers: source.querySelectorAll('#b_results').length };
+});
+
+// 等合并窗口（200ms）走完再断言
+await page.waitForTimeout(700);
+
+const pagerAfter = await page.evaluate(() => {
+  const items = [...document.querySelectorAll('.se-item')];
+  return {
+    count: items.length,
+    titles: items.map((li) => (li.querySelector('.se-link')?.textContent ?? '').trim()),
+    numbers: items.map((li) => (li.querySelector('.se-num')?.textContent ?? '').trim()),
+    stat: (document.querySelector('.se-stat')?.textContent ?? '').trim(),
+    // 新采出来的条目不得把原站节点漏到可见区
+    visibleAlgo: [...document.querySelectorAll('li.b_algo')].filter(
+      (el) => !el.closest('#se-source'),
+    ).length,
+  };
+});
+
+console.log('=== 永页机协同 ===');
+console.log(
+  `  模拟插入：${pagerBefore.ok ? '成功' : '失败(' + pagerBefore.reason + ')'}` +
+    `  隐藏源内结果容器=${pagerBefore.containers ?? '-'}`,
+);
+console.log(
+  `  追加前 ${pagerBefore.items ?? '-'} 条 → 追加后 ${pagerAfter.count} 条` +
+    `  页头计数「${pagerAfter.stat}」`,
+);
+console.log(`  末两条：${pagerAfter.titles.slice(-2).join(' / ')}`);
+console.log(
+  `  序号续接：${pagerAfter.numbers.slice(-2).join(', ')}` +
+    `  可见区原站条目=${pagerAfter.visibleAlgo}`,
+);
+
+const pagerOk =
+  pagerBefore.ok &&
+  pagerAfter.count === (pagerBefore.items ?? -1) + 2 &&
+  pagerAfter.titles.includes('第二页结果甲') &&
+  pagerAfter.titles.includes('第二页结果乙') &&
+  // 序号要接着往下排，不能从 01 重来
+  pagerAfter.numbers.slice(-2).join(',') ===
+    `${String(pagerAfter.count - 1).padStart(2, '0')},${String(pagerAfter.count).padStart(2, '0')}` &&
+  pagerAfter.stat.includes(`${pagerAfter.count} 条`) &&
+  pagerAfter.visibleAlgo === 0;
+
+console.log(pagerOk ? '  ✅ 协同正确' : '  ❌ 协同不符预期');
 
 /* ==========================================================================
    已登录分支专项验证
@@ -778,4 +928,4 @@ console.log(signedInOk ? '  ✅ 已登录分支正确' : '  ❌ 已登录分支�
 
 await browser.close();
 server.close();
-process.exit(pass && signedInOk ? 0 : 1);
+process.exit(pass && pagerOk && signedInOk ? 0 : 1);

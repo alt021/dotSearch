@@ -71,6 +71,38 @@ export const ROOT_ID = 'se-root';
  */
 export const MENU_SLOT_CLASS = 'se-menu-slot';
 
+/**
+ * 原站内容的隐藏容器 id。
+ *
+ * 重写时把必应原有 DOM 整体搬进这里而非删除：
+ * 自动翻页脚本（东方永页机）需要靠原有结构定位下一页与插入点，
+ * 而 pagetual-bridge 也要从这里采出新加载的结果。
+ */
+export const SOURCE_ID = 'se-source';
+
+/**
+ * 把 body 现有内容整体移入隐藏容器。
+ *
+ * 用 appendChild 逐个搬移（而非克隆或 innerHTML 赋值）：
+ * - 搬移会保留节点上已绑定的事件监听，必应脚本与 Pagetual 的引用继续有效
+ * - innerHTML 赋值会重建节点，等于把别人的监听全清掉
+ *
+ * 容器本身由 CSS 设为「absolutely positioned + 1px + overflow hidden +
+ * contain: paint」：不可见、不占位，且固定定位后代会一并被裁掉。
+ */
+function clipOriginalContent(): HTMLElement {
+  const source = document.createElement('div');
+  source.id = SOURCE_ID;
+  source.className = 'se-source';
+  // 对辅助技术隐藏，并移出焦点顺序
+  source.setAttribute('aria-hidden', 'true');
+  source.toggleAttribute('inert', true);
+
+  while (document.body.firstChild) source.appendChild(document.body.firstChild);
+  document.body.appendChild(source);
+  return source;
+}
+
 export const stripToResults: Feature = {
   id: 'strip-to-results',
   name: '重写结果页',
@@ -160,8 +192,23 @@ export const stripToResults: Feature = {
       document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
     ).filter((node) => pruneAnswerNode(node));
 
-    // ---- 2. 清空页面 -------------------------------------------------------
-    document.body.innerHTML = '';
+    /*
+     * ---- 2. 把原站内容整体移入隐藏容器，而不是删除 ------------------------
+     *
+     * 早期版本直接 document.body.innerHTML = ''，这会让自动翻页脚本
+     * （东方永页机 / Pagetual）无法工作：它是自驱动的，靠分析当前页
+     * 找「下一页链接」与「主内容容器」，清空后这些锚点全没了。
+     *
+     * 现在改为整体搬进一个隐藏容器：
+     *   - 原 DOM 仍在文档中，Pagetual 的查询照常命中原有结构
+     *   - 它把新一页的结果插进来后，由 pagetual-bridge 采出来渲染进我们的列表
+     *   - 用户看到的仍是干净的重写页面（隐藏容器不可见、不可聚焦）
+     *
+     * 用 appendChild 搬移节点而非克隆：搬移会保留节点上的事件监听，
+     * 必应自己的脚本与 Pagetual 的对象引用都继续有效。
+     */
+    const source = clipOriginalContent();
+
     document.body.className = 'se-stripped';
     document.body.removeAttribute('style');
     document.documentElement.removeAttribute('style');
@@ -220,11 +267,12 @@ export const stripToResults: Feature = {
     document.head.appendChild(style);
 
     const after = document.body.querySelectorAll('*').length;
+    const hidden = source.querySelectorAll('*').length;
     // 用 warn 级别输出关键诊断：Firefox 默认会显示 console.warn，
     // 而 console.info 需开启调试等级才可见，跨浏览器排查时容易看不到。
     log.warn(
-      `[重写完成] DOM ${before} → ${after}，结果 ${results.length} 条，` +
-        `分页 ${pages.length} 项（${lastPaginationDebug}）`,
+      `[重写完成] DOM ${before} → ${after}（其中隐藏数据源 ${hidden} 个节点），` +
+        `结果 ${results.length} 条，分页 ${pages.length} 项（${lastPaginationDebug}）`,
     );
   },
 };
@@ -281,6 +329,9 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
 
   const stat = document.createElement('p');
   stat.className = 'se-stat';
+  // 条数记在 dataset 上：自动翻页加载新页后条数会变，
+  // 失焦还原时需按「当前」条数显示，不能依赖构建时捕获的闭包值
+  stat.dataset.count = String(count);
   // 默认显示结果数；进入编辑态后改为提示回车提交
   stat.textContent = `找到 ${count} 条结果`;
 
@@ -303,19 +354,50 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   // 失焦立即还原：舍弃用户对该标题的全部改动
   input.addEventListener('blur', () => {
     input.value = query;
-    stat.textContent = `找到 ${count} 条结果`;
+    // 按 dataset 上的当前条数还原，自动翻页追加后数字才是对的
+    stat.textContent = `找到 ${stat.dataset.count ?? count} 条结果`;
   });
 
   head.appendChild(form);
   return head;
 }
 
+/**
+ * 更新页头的结果计数。
+ *
+ * 自动翻页脚本加载新页后，条目会变多，计数需要跟着走。
+ * 正在编辑查询词时不覆盖提示文案。
+ */
+export function updateResultCount(total: number): void {
+  const stat = document.querySelector<HTMLElement>('.se-stat');
+  if (!stat) return;
+  stat.dataset.count = String(total);
+  if (document.activeElement?.classList.contains('se-query')) return;
+  stat.textContent = `找到 ${total} 条结果`;
+}
+
 /** 构建结果列表 */
 function buildResultList(results: SearchResult[]): HTMLElement {
   const list = document.createElement('ol');
   list.className = 'se-list';
+  list.append(...buildResultItems(results, 0));
+  return list;
+}
 
-  results.forEach((result, i) => {
+/**
+ * 构建结果条目。
+ *
+ * 单独拆出来是为了支持「追加」：与自动翻页脚本（如东方永页机）
+ * 协同工作时，新加载的一页要接着已有条目往后追加，
+ * 而不是重建整个列表 —— 重建会丢掉用户当前的滚动位置与悬停状态。
+ *
+ * @param startIndex 已渲染的条目数，用于续上序号
+ */
+export function buildResultItems(
+  results: SearchResult[],
+  startIndex: number,
+): HTMLElement[] {
+  return results.map((result, offset) => {
     const item = document.createElement('li');
     item.className = 'se-item';
 
@@ -325,7 +407,7 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     // 左栏：序号。瑞士风格用等宽数字建立纵向韵律，替代装饰性图形
     const num = document.createElement('span');
     num.className = 'se-num';
-    num.textContent = String(i + 1).padStart(2, '0');
+    num.textContent = String(startIndex + offset + 1).padStart(2, '0');
 
     // 右栏：内容
     const body = document.createElement('div');
@@ -371,10 +453,8 @@ function buildResultList(results: SearchResult[]): HTMLElement {
     applyLinkAttrs(hit, href);
 
     item.append(num, hit, body);
-    list.appendChild(item);
+    return item;
   });
-
-  return list;
 }
 
 /** 为锚点写入地址与打开方式（新标签页，且不泄漏 referrer） */
