@@ -69,7 +69,6 @@ export const stripToResults: Feature = {
   name: '重写结果页',
   description: '移除顶栏、页脚、侧栏、广告与原站样式，用统一结构重建结果列表。',
   engines: 'all',
-  defaultEnabled: true,
 
   supports() {
     return true;

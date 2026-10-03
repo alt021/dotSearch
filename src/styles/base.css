@@ -379,3 +379,193 @@ body.se-stripped {
     font-size: 1.125rem;
   }
 }
+
+/* ==========================================================================
+   右侧工具栏
+   --------------------------------------------------------------------------
+   替代原 Tampermonkey 弹出菜单，提供必应账户 / Rewards / 设置入口。
+
+   状态与位移（三态由 transform 表达，均不参与页面布局）：
+     收起  translateX(100%)              整块移出视口
+     露出  translateX(calc(100% - 1rem)) 恰好只留 tab 一条在边缘
+     展开  translateX(0)                  整块滑入
+
+   tab 宽 1rem，所以「100% - 1rem」正好露出 tab 自身。
+   ========================================================================== */
+
+/*
+ * 裁切层：固定在视口上、裁掉溢出，且不接收事件。
+ * 存在意义见 tool-sidebar.ts 的说明 —— 防止隐藏在视口外的面板
+ * 撑出横向滚动条，进而引发 innerWidth 抖动与布局位移。
+ */
+.se-toolbar-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.se-toolbar {
+  /* absolute 才能被裁切层约束；fixed 后代不受祖先 overflow 影响 */
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+  pointer-events: auto;
+  transform: translateX(100%);
+  transition: transform 0.22s ease;
+}
+
+/* 露出：鼠标贴近右边缘时的提示态 */
+.se-toolbar.se-peek {
+  transform: translateX(calc(100% - 1rem));
+}
+
+/* 展开 */
+.se-toolbar.se-open {
+  transform: translateX(0);
+}
+
+/* ---- 边缘那一条：既是提示，也是展开按钮 ---- */
+
+.se-toolbar-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  padding: 0;
+  background: var(--se-fg);
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+  /* 露出态下只有这一条可见，不设过渡会显得突兀 */
+  transition: background-color 0.15s ease;
+}
+
+.se-toolbar-tab:hover {
+  background: var(--se-accent);
+}
+
+.se-toolbar-tab:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: -2px;
+}
+
+/* 纯 CSS 箭头，无图标依赖 */
+.se-toolbar-chevron {
+  width: 0.35rem;
+  height: 0.35rem;
+  border-left: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+  transform: rotate(45deg) translate(0.06rem, -0.06rem);
+  transition: transform 0.22s ease;
+}
+
+/* 展开后箭头反向，提示可收起 */
+.se-toolbar.se-open .se-toolbar-chevron {
+  transform: rotate(-135deg) translate(0.06rem, -0.06rem);
+}
+
+/* ---- 面板 ---- */
+
+.se-toolbar-panel {
+  display: flex;
+  flex-direction: column;
+  width: 17rem;
+  padding: 1.5rem 1.25rem;
+  background: var(--se-bg);
+  border-left: 1px solid var(--se-line);
+}
+
+.se-toolbar-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 3px solid var(--se-rule);
+}
+
+.se-toolbar-title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--se-muted);
+}
+
+.se-toolbar-close {
+  padding: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--se-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.se-toolbar-close:hover {
+  color: var(--se-accent);
+}
+
+.se-toolbar-nav {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.25rem;
+}
+
+/* 条目之间用细线切割，与结果列表同一语言 */
+.se-toolbar-link {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.9rem 0;
+  color: inherit;
+  text-decoration: none;
+  border-bottom: 1px solid var(--se-line);
+}
+
+.se-toolbar-link:last-child {
+  border-bottom: 0;
+}
+
+.se-toolbar-link-label {
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.se-toolbar-link-hint {
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  color: var(--se-muted);
+}
+
+/* 悬停：标红 + 下划线展开，与结果条目保持一致 */
+.se-toolbar-link:hover .se-toolbar-link-label {
+  color: var(--se-accent);
+  background-image: linear-gradient(var(--se-accent), var(--se-accent));
+  background-repeat: no-repeat;
+  background-position: 0 100%;
+  background-size: 100% 2px;
+}
+
+.se-toolbar-link:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: 2px;
+}
+
+/* 窄屏下收窄面板，避免挤占阅读区 */
+@media (max-width: 600px) {
+  .se-toolbar-panel {
+    width: 14rem;
+    padding: 1.25rem 1rem;
+  }
+}

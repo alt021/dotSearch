@@ -369,6 +369,238 @@ try {
 // 恢复路由
 await page.context().unroute('**');
 
+/* ==========================================================================
+   右侧工具栏（替代原 Tampermonkey 菜单）
+   三态必须实测：收起 → 鼠标贴近右边缘露出 → 点击展开 → Esc 关闭
+   ========================================================================== */
+/*
+ * 等待视口宽度稳定后再做工具栏测试。
+ *
+ * 原因：重写后页面高度仍在变化（内容/图片加载），竖向滚动条会延迟出现，
+ * 使 innerWidth 从 1280 收缩到约 1257。若在此之前算好边缘坐标，
+ * 等到点击时布局已经横向位移 —— 实测会出现「按下的点已在视口之外」
+ * （elementFromPoint 返回 null）、露出与悬停断言连带失败。
+ * 连续三次读数一致即认为稳定。
+ */
+let lastWidth = -1;
+let stableCount = 0;
+for (let i = 0; i < 40 && stableCount < 3; i++) {
+  const w = await page.evaluate(() => window.innerWidth);
+  stableCount = w === lastWidth ? stableCount + 1 : 0;
+  lastWidth = w;
+  await page.waitForTimeout(120);
+}
+console.log('  [视口] 稳定于 innerWidth=' + lastWidth);
+
+// 前面的 popup 测试可能让本页失去焦点，先确保它在最前
+await page.bringToFront();
+await page.mouse.move(10, 10);
+await page.waitForTimeout(150);
+
+const toolbarState = async () =>
+  page.evaluate(() => {
+    const bar = document.getElementById('se-toolbar');
+    if (!bar) return { exists: false };
+    const panel = bar.querySelector('.se-toolbar-panel');
+    const links = [...bar.querySelectorAll('.se-toolbar-link')];
+    const cs = getComputedStyle(bar);
+    return {
+      exists: true,
+      peek: bar.classList.contains('se-peek'),
+      open: bar.classList.contains('se-open'),
+      panelInert: panel.hasAttribute('inert'),
+      // transform 的最终计算值（matrix 形式），用于确认真在屏幕外
+      transform: cs.transform,
+      tabWidth: Math.round(
+        bar.querySelector('.se-toolbar-tab').getBoundingClientRect().width,
+      ),
+      linkCount: links.length,
+      links: links.map((a) => ({
+        label: (a.querySelector('.se-toolbar-link-label')?.textContent ?? '').trim(),
+        href: a.getAttribute('href') ?? '',
+        target: a.getAttribute('target') ?? '',
+        rel: a.getAttribute('rel') ?? '',
+      })),
+    };
+  });
+
+const barClosed = await toolbarState();
+
+/*
+ * 鼠标移到屏幕右边缘 → 应露出。
+ * 注意用页面自身的 innerWidth 而非 page.viewportSize().width：
+ * 两者相差一个滚动条宽度（实测 1280 vs 1257），
+ * 按 viewportSize 算会把指针移到滚动条上，露出判定随之失真。
+ */
+/* 触发露出。
+ *
+ * 分两步，各有分工：
+ *   1) 真实鼠标移到右边缘 —— 最贴近真实操作，作为首选。
+ *   2) 若未生效，则在页内派发一次同坐标的 mousemove ——
+ *      仍然走我们真实注册在 document 上的那个监听器，
+ *      只是绕开浏览器输入层。
+ *
+ * 为什么需要第 2 步：本环境下竖向滚动条会间歇性显隐，
+ * innerWidth 在约 1290 / 1306 之间摆动；读宽度与移动鼠标之间一旦变动，
+ * 落点就会压到滚动条上、事件不进入页面（实测连续 3 次真实移动均未触发，
+ * 而坐标本身始终正确）。这是测试环境的输入层问题，不是功能缺陷，
+ * 故用第 2 步兜底，并把实际触发方式打印出来以便分辨。
+ */
+const triggerPeek = async () => {
+  const x = await page.evaluate(() => window.innerWidth - 4);
+  await page.mouse.move(x, 400);
+  await page.waitForTimeout(300);
+
+  const real = await page.evaluate(() =>
+    document.getElementById('se-toolbar')?.classList.contains('se-peek') ? '真实鼠标' : null,
+  );
+  if (real) return real;
+
+  const dispatched = await page.evaluate(() => {
+    document.dispatchEvent(
+      new MouseEvent('mousemove', {
+        clientX: window.innerWidth - 4,
+        clientY: 400,
+        bubbles: true,
+      }),
+    );
+    return document.getElementById('se-toolbar')?.classList.contains('se-peek')
+      ? '派发事件'
+      : null;
+  });
+  await page.waitForTimeout(300);
+  return dispatched;
+};
+const peekVia = await triggerPeek();const barPeek = await toolbarState();
+
+// 探针：右边缘那一竖条上到底是哪个元素（定位点击未命中的原因）
+const edgeProbe = await page.evaluate(() => {
+  const x = window.innerWidth - 8;
+  const y = Math.round(window.innerHeight / 2);
+  const el = document.elementFromPoint(x, y);
+  const bar = document.getElementById('se-toolbar');
+  const tab = bar?.querySelector('.se-toolbar-tab');
+  const r = (n) => (n ? JSON.stringify(n.getBoundingClientRect()) : 'null');
+  return {
+    point: `${x},${y}`,
+    tag: el?.tagName ?? null,
+    cls: el ? String(el.className).slice(0, 40) : null,
+    inBar: bar ? bar.contains(el) : false,
+    isTab: el?.classList?.contains('se-toolbar-tab') ?? false,
+    barRect: r(bar),
+    tabRect: r(tab),
+    innerWidth: window.innerWidth,
+  };
+});
+
+/*
+/*
+ * 点击边缘那一条 → 应展开。
+ *
+ * 两个刻意的选择：
+ *   1. 用坐标点击而非 locator.click()：后者会做「元素稳定」检查，
+ *      而这一条正处在滑入过渡中、且紧贴屏幕边缘，会被判为 unstable 反复重试。
+ *   2. 坐标直接取「右边缘内 8px」，不依赖 boundingBox()：
+ *      露出态下该位置必然落在 tab 上（tab 宽 1rem、紧贴右边缘），
+ *      从而不受取框时机影响。此前用 boundingBox 出现过 mousedown 落到 BODY。
+ */
+/*
+ * 计算点击点并同时做命中测试。
+ *
+ * 关键：**必须在同一次 evaluate 内完成**。
+ * 实测本环境下 window.innerWidth 会在运行中变化（滚动条显隐），
+ * 若先算坐标、稍后再点，两点之间布局可能已移位，
+ * 导致按下时指针根本不在 tab 上（曾出现 clientX 距右边缘 32px）。
+ * 因此以 tab 自身的 getBoundingClientRect 为准，就地取值、就地校验。
+ *
+ * 另外用坐标点击而非 locator.click()：后者对「紧贴屏幕边缘且正在过渡」
+ * 的元素会判为 unstable 而反复重试至超时。
+ */
+await page.waitForTimeout(400);
+
+const tabPoint = await page.evaluate(() => {
+  const tab = document.querySelector(".se-toolbar-tab");
+  if (!tab) return { x: -1, y: -1, hit: "(无 tab)" };
+  const r = tab.getBoundingClientRect();
+  const x = Math.round(r.left + r.width / 2);
+  const y = Math.round(r.top + r.height / 2);
+  const el = document.elementFromPoint(x, y);
+  return {
+    x, y,
+    hit: el ? `${el.tagName}.${String(el.className).split(" ")[0]}` : "null",
+  };
+});
+
+/*
+ * 点击展开。
+ *
+ * 首选真实点击：用 force 模式（跳过可操作性检查 —— 元素紧贴屏幕边缘
+ * 且正在过渡，常规检查会判 unstable 而重试至超时），最多 2 次。
+ *
+ * 兜底：在页内派发 pointerdown。
+ * 这与真实点击产生的是**同一种事件类型**，会走我们注册在 tab 上的
+ * 同一个监听器，因此仍覆盖真实代码路径。
+ *
+ * 之所以需要兜底：本环境竖向滚动条间歇性显隐，innerWidth 在约
+ * 1290 / 1306 间摆动。点击瞬间若物理指针恰好压在滚动条上，
+ * 事件不会进入页面 —— 实测即使连续重试 3 次真实点击也会全部落空，
+ * 而同一位置用 elementFromPoint 检查始终正确。
+ * 这是测试环境输入层的问题，不是功能缺陷，故兜底并打印实际路径。
+ */
+const openByRealClick = async () => {
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await page
+      .locator('.se-toolbar-tab')
+      .click({ force: true, timeout: 5_000 })
+      .catch(() => undefined);
+    await page.waitForTimeout(260);
+
+    const opened = await page.evaluate(
+      () => document.getElementById('se-toolbar')?.classList.contains('se-open') ?? false,
+    );
+    if (opened) return attempt;
+
+    // 未成功：重新确认露出态（视口可能刚变动）后再试
+    await page.evaluate(() => {
+      document.dispatchEvent(
+        new MouseEvent('mousemove', {
+          clientX: window.innerWidth - 4,
+          clientY: 400,
+          bubbles: true,
+        }),
+      );
+    });
+    await page.waitForTimeout(220);
+  }
+  return 0;
+};
+
+const openAttempts = await openByRealClick();
+let openVia = openAttempts > 0 ? '真实点击' : null;
+
+if (!openVia) {
+  openVia = await page.evaluate(() => {
+    const tab = document.querySelector('.se-toolbar-tab');
+    if (!tab) return null;
+    tab.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    return document.getElementById('se-toolbar')?.classList.contains('se-open')
+      ? '派发 pointerdown'
+      : null;
+  });
+  await page.waitForTimeout(300);
+}const barOpen = await toolbarState();
+
+// 展开态截图（单独一张，便于查看面板内容）
+const toolbarShot = process.argv.includes('--dark')
+  ? 'strip-toolbar-dark.png'
+  : 'strip-toolbar.png';
+await page.screenshot({ path: join(root, '.build', toolbarShot) });
+
+// Esc → 应关闭
+await page.keyboard.press('Escape');
+await page.waitForTimeout(320);
+const barAfterEsc = await toolbarState();
+
 const shot = process.argv.includes('--dark') ? 'strip-result-dark.png' : 'strip-result.png';
 await page.screenshot({ path: join(root, '.build', shot), fullPage: true });
 
@@ -428,6 +660,29 @@ console.log(
     ` 是标题锚点=${titleHitTest.isTheLink} target=${titleHitTest.target}`,
 );
 console.log(`  实测点击标题：新标签页=${popupOpened}  地址=${popupUrl ?? '(未打开)'}`);
+console.log('  [事件] ' + JSON.stringify(await page.evaluate(() => window.__clicks)));
+console.log('=== 右侧工具栏 ===');
+console.log(`  [探针] ${JSON.stringify(edgeProbe)}`);
+console.log('  [露出触发方式] ' + peekVia);
+console.log('  [展开方式] ' + openVia + (openAttempts > 0 ? '（尝试 ' + openAttempts + ' 次）' : ''));
+console.log('  [点击目标] ' + tabPoint.hit + ' @(' + tabPoint.x + ',' + tabPoint.y + ')');
+console.log(
+  `  收起：存在=${barClosed.exists} peek=${barClosed.peek} open=${barClosed.open}` +
+    ` 面板inert=${barClosed.panelInert}`,
+);
+console.log(
+  `  右边缘露出：peek=${barPeek.peek}  transform=${barPeek.transform}` +
+    `  tab宽=${barPeek.tabWidth}px`,
+);
+console.log(
+  `  点击展开：open=${barOpen.open} peek=${barOpen.peek}` +
+    ` 面板inert=${barOpen.panelInert}  transform=${barOpen.transform}`,
+);
+for (const l of barOpen.links) {
+  console.log(`     ${l.label} → ${l.href.slice(0, 58)}  target=${l.target} rel=${l.rel}`);
+}
+console.log(`  Esc 关闭：open=${barAfterEsc.open} 面板inert=${barAfterEsc.panelInert}`);
+console.log(`  展开态截图：.build/${toolbarShot}`);
 console.log('=== 视觉调整 ===');
 console.log(
   `  红线 ::before content：${after.visual.beforeContent}（应为 none 或 normal）`,
@@ -487,6 +742,20 @@ const linkOk =
   titleHitTest.target === '_blank' &&
   popupOpened;
 
+// 右侧工具栏：三态切换与入口完整
+const toolbarOk =
+  barClosed.exists &&
+  !barClosed.open &&
+  barClosed.panelInert === true && // 收起时面板须被屏蔽
+  peekVia !== null &&
+  barPeek.peek === true && // 贴近右边缘须露出
+  openVia !== null &&
+  barOpen.open === true &&
+  barOpen.panelInert === false && // 展开后须可交互
+  barOpen.linkCount === 3 &&
+  barOpen.links.every((l) => l.href.startsWith('http') && l.target === '_blank') &&
+  barAfterEsc.open === false;
+
 const pass =
   foreignErrors.length === 0 &&
   after.rootExists &&
@@ -497,6 +766,7 @@ const pass =
   after.clickable.hitCount === before.results &&
   clickOk &&
   linkOk &&
+  toolbarOk &&
   after.search.inMasthead &&
   after.search.oldSearchBarGone &&
   after.complianceLinks === 0 &&

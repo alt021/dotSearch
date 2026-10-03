@@ -15,18 +15,19 @@ export interface FeatureContext {
  *   supports()   判断是否在当前引擎上生效（不生效则跳过）
  *   onNavigate() 每次导航/换词后执行（需自行做幂等）
  *   dispose()    引擎切换或脚本卸载时清理副作用
+ *
+ * 所有功能常驻启用：原先的开关机制随 Tampermonkey 菜单一并移除，
+ * 因此不再有 defaultEnabled / 启用状态的概念。
  */
 export interface Feature {
-  /** 稳定 ID，用于设置持久化，勿随意修改 */
+  /** 稳定 ID，用于日志定位，勿随意修改 */
   readonly id: string;
-  /** 展示名（菜单与日志用） */
+  /** 展示名（日志用） */
   readonly name: string;
   /** 一句话说明这个功能做什么 */
   readonly description: string;
   /** 作用的引擎；'all' 表示所有已适配引擎 */
   readonly engines: EngineId[] | 'all';
-  /** 默认是否开启 */
-  readonly defaultEnabled: boolean;
 
   supports(engine: EngineAdapter): boolean;
   onNavigate(ctx: FeatureContext): void | Promise<void>;

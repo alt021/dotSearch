@@ -9,14 +9,15 @@
 /** 引擎标识。新增引擎时同步扩展此列表，types/engine.ts 会据此推导类型。 */
 export const ENGINE_IDS = ['bing', 'google', 'baidu'] as const;
 
-/** 注入页面的脚本权限 */
-export const GRANTS = [
-  'GM_getValue',
-  'GM_setValue',
-  'GM_addStyle',
-  'GM_registerMenuCommand',
-  'GM_openInTab',
-] as const;
+/**
+ * 注入页面的脚本权限。
+ *
+ * 只保留真正需要的：GM_addStyle 用于注入样式。
+ * 原先的 GM_registerMenuCommand（弹出菜单）与
+ * GM_getValue / GM_setValue（功能开关持久化）随开关机制一并移除，
+ * 顺带缩小了权限面。
+ */
+export const GRANTS = ['GM_addStyle'] as const;
 
 /**
  * @match 规则 —— 已接入适配器的引擎。

@@ -1,28 +1,26 @@
 /**
  * 运行时调度
  *
- * 职责：识别当前引擎 → 在其搜索页上按开关依次执行已启用的功能。
+ * 职责：识别当前引擎 → 在其搜索页上依次执行各功能。
+ * 所有功能常驻启用 —— 原先的开关机制（Tampermonkey 菜单）已移除。
  * 具体功能实现见 src/features/，引擎差异见 src/engines/。
  */
 import type { Feature, FeatureContext } from '../types/feature.js';
 import type { EngineAdapter } from '../types/engine.js';
-import { SettingsStore, injectStyle, log, registerMenu } from './env.js';
+import { injectStyle, log } from './env.js';
 import { onUrlChange, waitForSelector } from './dom.js';
 import { detectEngine } from '../engines/index.js';
 import { ALL_FEATURES } from '../features/index.js';
 import css from '../styles/base.css';
 
-const DEBUG_FLAG = '__searchEnhanceDebug__';
-
 export class Runner {
-  private readonly settings = new SettingsStore();
   private engine: EngineAdapter | null = null;
   private readonly active = new Set<Feature>();
   private readonly disposers: Array<() => void> = [];
   private cssInjected = false;
 
   /**
-   * 首次启动：匹配引擎、建立导航监听、注册菜单
+   * 首次启动：匹配引擎、建立导航监听、执行功能
    *
    * @param forceEngine 测试用：跳过 URL 匹配，强制指定引擎。
    *   验证脚本需要把抓取下来的页面喂给浏览器，此时地址栏是本地服务地址而非
@@ -44,7 +42,6 @@ export class Runner {
     this.engine = engine;
     injectStyle(css);
     this.cssInjected = true;
-    this.registerMenus();
 
     const forced = Boolean(forceEngine);
 
@@ -67,30 +64,6 @@ export class Runner {
 
     await this.runAll(new URL(location.href), forced);
     log.info(`${engine.name} 增强已启用，共 ${this.active.size} 个功能。`);
-  }
-
-  private registerMenus(): void {
-    registerMenu('🐛 切换调试日志', () => {
-      const scope = globalThis as unknown as Record<string, boolean>;
-      const next = !scope[DEBUG_FLAG];
-      scope[DEBUG_FLAG] = next;
-      log.setDebug(next);
-      log.info(`调试日志：${next ? '开' : '关'}`);
-    });
-
-    for (const feature of ALL_FEATURES) {
-      const on = this.settings.isEnabled(feature);
-      registerMenu(`${on ? '☑' : '☐'} ${feature.name}`, () => {
-        const nowOn = this.settings.toggle(feature);
-        if (nowOn) {
-          this.runFeature(feature);
-        } else {
-          feature.dispose?.();
-          this.active.delete(feature);
-        }
-        log.info(`${feature.name}：${nowOn ? '已开启' : '已关闭'}（刷新后完全生效）`);
-      });
-    }
   }
 
   /** 跑一轮所有功能（首次加载与换词后共用） */
@@ -136,23 +109,21 @@ export class Runner {
     const ctx: FeatureContext = { engine, query: engine.parseQuery(url) ?? '', url };
 
     for (const feature of ALL_FEATURES) {
-      if (!this.settings.isEnabled(feature)) continue;
       if (!this.matchesEngine(feature, engine)) continue;
-      this.runFeature(feature, ctx);
+      await this.runFeature(feature, ctx);
     }
   }
 
-  private runFeature(feature: Feature, ctx?: FeatureContext): void {
+  /** 执行单个功能；返回 Promise 以便按顺序等待（顺序见 features/index.ts） */
+  private async runFeature(feature: Feature, ctx?: FeatureContext): Promise<void> {
     if (ctx && !feature.supports(ctx.engine)) return;
     const context = ctx ?? { engine: this.engine!, query: '', url: new URL(location.href) };
     try {
-      const result = feature.onNavigate(context);
-      if (result instanceof Promise) {
-        result.catch((err) => log.error(`功能 ${feature.id} 执行失败：`, err));
-      }
+      // 必须 await：顺序语义见 features/index.ts 的说明
+      await feature.onNavigate(context);
       this.active.add(feature);
     } catch (err) {
-      log.error(`功能 ${feature.id} 抛错：`, err);
+      log.error(`功能 ${feature.id} 执行失败：`, err);
     }
   }
 
