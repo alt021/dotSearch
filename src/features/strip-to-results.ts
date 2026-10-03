@@ -33,9 +33,33 @@ const EXTRA_SELECTORS = {
    * 避免跨浏览器的结构差异导致匹配失败。
    */
   pagination: '.b_pag',
-  /** 顶部直答区：结构复杂，仅保留原节点 */
+  /**
+   * 直答区候选。
+   *
+   * 实测 `#b_context` 是右侧栏「更多结果」的容器，
+   * 其下的 `<li class="b_ans">` 既可能承载真正的直答模块，
+   * **也可能只是「相关搜索」**(`<div class="b_rs rsExplr">`)，后者不应保留。
+   * 因此这里只做候选收集，由 pruneAnswerNodes() 逐个甄别。
+   */
   answer: '#b_context .b_ans',
 } as const;
+
+/**
+ * 「相关搜索」模块的识别特征。
+ *
+ * 实测 Bing 渲染为 `<div class="b_rs rsExplr">`，
+ * 文案形如「网络开发 的相关搜索 …」。
+ * 用户明确表示不要这个模块，故保留直答区时须剔除。
+ */
+function isRelatedSearchBlock(el: Element): boolean {
+  // 类名判定为主（稳定），文案判定为辅（兜底）
+  const classes = String(el.className ?? '').split(/\s+/);
+  if (classes.includes('b_rs') || classes.includes('rsExplr')) return true;
+
+  // 仅当文案以「相关搜索」这类标题开头时才判定，避免误伤正文里的同名词
+  const text = (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return /^(相关搜索|Related searches|人们还搜索了|其他人还搜了|People also search)/i.test(text);
+}
 
 /** 重建后的根容器 id，便于样式与后续功能定位 */
 export const ROOT_ID = 'se-root';
@@ -110,12 +134,17 @@ export const stripToResults: Feature = {
       `.sb_pagF=${document.querySelectorAll('.sb_pagF').length} ` +
       `aria[第/Page]=${document.querySelectorAll('a[aria-label^="第"], a[aria-label^="Page"]').length}`;
 
-    // 直答区结构复杂，仅保留原节点
-    const answerNode = document.querySelector(EXTRA_SELECTORS.answer);
-
-    // 直答区是唯一会保留到新页面的原站节点，
-    // 其内部常混入备案号、隐私政策、条款等合规链接，需先剔除
-    if (answerNode) stripComplianceLinks(answerNode as HTMLElement);
+    /*
+     * 直答区：逐个甄别后再保留。
+     * 该节点是唯一会保留到新页面的原站内容，需做三项清理：
+     *   1. 剔除「相关搜索」模块（用户明确不需要）
+     *   2. 剔除内联 <style>/<link>，否则原站 CSS 会泄漏进改写后的页面
+     *   3. 剔除备案号、隐私政策等合规链接
+     * 清理后若已无实质内容，则整体丢弃，不留空壳。
+     */
+    const answerNodes = Array.from(
+      document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
+    ).filter((node) => pruneAnswerNode(node));
 
     // ---- 2. 清空页面 -------------------------------------------------------
     document.body.innerHTML = '';
@@ -136,9 +165,9 @@ export const stripToResults: Feature = {
     const main = document.createElement('main');
     main.className = 'se-main';
 
-    if (answerNode) {
-      answerNode.classList.add('se-extra');
-      main.appendChild(answerNode);
+    for (const node of answerNodes) {
+      node.classList.add('se-extra');
+      main.appendChild(node);
     }
 
     if (results.length > 0) {
@@ -640,7 +669,40 @@ function buildEmptyState(query: string): HTMLElement {
   return empty;
 }
 
-/** 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
+/**
+ * 甄别并清理一个直答区节点。
+ *
+ * 做三件事（见调用处说明），返回 true 表示该节点值得保留。
+ */
+function pruneAnswerNode(node: HTMLElement): boolean {
+  // 节点本身就是相关搜索 → 整体丢弃
+  if (isRelatedSearchBlock(node)) return false;
+
+  // 剔除内部的相关搜索子模块
+  for (const el of Array.from(node.querySelectorAll('*'))) {
+    if (isRelatedSearchBlock(el)) el.remove();
+  }
+
+  /*
+   * 剔除内联样式表与外链。
+   * 这些是 Bing 给该模块配的样式，保留下来会**全局生效**，
+   * 干扰我们自己的排版（原站 CSS 的作用域依赖已清空的外层结构）。
+   */
+  for (const el of Array.from(node.querySelectorAll('style, link'))) el.remove();
+
+  // 剔除备案号 / 隐私政策等合规链接
+  stripComplianceLinks(node);
+
+  /*
+   * 清理后若已无实质内容，视作空壳丢弃。
+   * 阈值取 10 个字符：保留真正有信息量的模块，滤掉只剩残留标点的。
+   */
+  const text = (node.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return text.length >= 10;
+}
+
+/**
+ * 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
 const COMPLIANCE_PATTERN =
   /隐私|条款|条款|协议|备案|许可|版权|法律|声明|政策|服务条款|隐私政策|隐私声明|京 ICP|沪 ICP|粤 ICP|ICP 备|公网安备|copyright|privacy|terms|legal|cookie/i;
 

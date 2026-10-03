@@ -109,19 +109,42 @@ for (const c of CASES) {
         rootExists: !!document.getElementById('se-root'),
         resultCount: document.querySelectorAll('.se-item').length,
         currentTag: (document.querySelector('.se-page-current') || {}).tagName || null,
+        extra: (function () {
+          var nodes = document.querySelectorAll('.se-extra');
+          var hasRelated = false;
+          nodes.forEach(function (n) {
+            if (/相关搜索|Related searches/.test(n.textContent || '')) hasRelated = true;
+          });
+          return {
+            count: nodes.length,
+            hasRelatedSearch: hasRelated,
+            leftoverRs: document.querySelectorAll('.se-extra .b_rs, .se-extra .rsExplr').length,
+            leakedStyle: document.querySelectorAll('.se-extra style, .se-extra link').length,
+          };
+        })(),
         logs: (window.__cap || []).slice(0, 4),
       };`,
       args: [],
     }),
   );
 
+  // 相关搜索不应出现在重写后的页面里
+  const extraClean =
+    !out.extra.hasRelatedSearch && out.extra.leftoverRs === 0 && out.extra.leakedStyle === 0;
+
   // 原站无分页时（结果不足一页）不算失败
-  const ok = src.bPag > 0 ? out.pagRendered > 0 : out.rootExists;
+  const ok = (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean;
   if (!ok) failures++;
   console.log(
     `${ok ? '✅' : '❌'} ${c.label}` +
       `  原站(分页容器=${src.bPag} 结果=${src.bAlgo})` +
       ` → 重写(分页=${out.pagRendered} 结果=${out.resultCount} 当前页=${out.currentTag})`,
+  );
+  console.log(
+    `     直答区: ${out.extra.count} 个` +
+      `  含相关搜索=${out.extra.hasRelatedSearch}` +
+      `  残留b_rs=${out.extra.leftoverRs}` +
+      `  泄漏样式=${out.extra.leakedStyle}`,
   );
   for (const l of out.logs ?? []) console.log(`     ${String(l).slice(0, 130)}`);
 }
