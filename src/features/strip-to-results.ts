@@ -21,9 +21,16 @@ import { log } from '../core/env.js';
 const EXTRA_SELECTORS = {
   /**
    * 分页控件。
+   *
    * 注意是 **class** 而非 id —— 实测 Bing 渲染为
    * `<li class="b_pag"><nav><ul class="sb_pagF"><li><a>…</a></li></ul></nav></li>`，
-   * 不存在 id="b_pag"。用 #b_pag 永远匹配不到（这是页码不显示的根因）。
+   * 不存在 id="b_pag"。用 #b_pag 永远匹配不到。
+   *
+   * 该 <li> 内首个子元素是 <link rel="stylesheet">，且其所在 <ol> 存在
+   * 提前闭合（</ol></main>）——这类非标准嵌套在 Chromium 与 Firefox 中
+   * 解析结果不同，因此**不能用后代选择器**（如 .b_pag .sb_pagF a），
+   * 必须先用 querySelectorAll('.b_pag') 定位容器、再各自查询内部，
+   * 避免跨浏览器的结构差异导致匹配失败。
    */
   pagination: '.b_pag',
   /** 顶部直答区：结构复杂，仅保留原节点 */
@@ -264,46 +271,86 @@ interface PageLink {
  * 真实结构（实测）：
  *   li.b_pag > nav > ul.sb_pagF > li > a[aria-label="第 N 页"]
  *
- * 两个要点：
+ * 三个要点：
  *   - 当前页的 <a> **没有 href**（只有 .sb_pagS 标记），不能按 a[href] 过滤，否则当前页会丢失
- *   - 无障碍标签在 aria-label 上，文本可能被截断或为图标（下一页是 ‹）
+ *   - 无障碍标签在 aria-label 上，文本可能被截断或为图标（下一页是 div.sw_next）
+ *   - **分页容器在 Chromium 与 Firefox 中的 DOM 结构不同**（非标准嵌套：
+ *     <li> 内含 <link>、所在 <ol> 提前闭合），后代选择器在 Firefox 上会失配。
+ *     故先定位容器、再在容器内做多策略查询，任一命中即可。
  */
 function extractPaginationLinks(): PageLink[] {
-  const root = document.querySelector(EXTRA_SELECTORS.pagination);
-  if (!root) return [];
+  // 策略 1：.b_pag 容器（正常路径）
+  let containers = Array.from(document.querySelectorAll(EXTRA_SELECTORS.pagination));
 
-  const anchors = Array.from(
-    root.querySelectorAll<HTMLAnchorElement>('.sb_pagF a, nav a[aria-label]'),
-  );
+  // 策略 2：容器找不到时，按页码特征全局兜底
+  // （某些解析路径下 .b_pag 可能未生成出可查询的子树）
+  if (containers.length === 0) {
+    containers = [];
+    const firstPageLink = document.querySelector('a[aria-label^="第"][aria-label$="页"]');
+    containers = firstPageLink
+      ? [firstPageLink.closest('nav, .b_pag, ul, div') ?? firstPageLink]
+      : [];
+  }
+
+  if (containers.length === 0) return [];
 
   const pages: PageLink[] = [];
   const seen = new Set<string>();
 
-  for (const a of anchors) {
-    const ariaLabel = (a.getAttribute('aria-label') ?? '').trim();
-    const rawHref = a.getAttribute('href');
-    const current = !rawHref || a.classList.contains('sb_pagS');
+  for (const container of containers) {
+    // 容器内收集所有候选链接，兼容不同嵌套
+    const anchors = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>('a[aria-label], a[href], .sb_pag'),
+    );
+    if (anchors.length === 0) {
+      // 容器自身可能就是链接（极端情况）
+      if (container instanceof HTMLAnchorElement) anchors.push(container);
+      else continue;
+    }
 
-    // 文本：图标型按钮（下一页/上一页）用 aria-label 兜底
-    const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
-    const label = text || ariaLabel;
-    if (!label) continue;
+    for (const a of anchors) {
+      const ariaLabel = (a.getAttribute('aria-label') ?? '').trim();
+      const rawHref = a.getAttribute('href');
+      const isCurrent =
+        !rawHref || a.classList.contains('sb_pagS') || ariaLabel.includes('当前');
 
-    // 去重：首页同时有 aria-label 和文本，按 aria-label 归一
-    const key = ariaLabel || label;
-    if (seen.has(key)) continue;
-    seen.add(key);
+      // 文本：图标型按钮（下一页/上一页）内部是 div.sw_next，需用 aria-label 兜底
+      const text = (a.textContent ?? '').replace(/\s+/g, ' ').trim();
+      const label = text || ariaLabel;
+      if (!label) continue;
 
-    pages.push({
-      label,
-      // 相对地址补全为绝对地址；当前页无 href
-      href: rawHref ? new URL(rawHref, location.origin).href : null,
-      ariaLabel: ariaLabel || label,
-      current,
-    });
+      // 只保留页码与翻页控件，过滤掉分页容器内的其他链接（如反馈按钮）
+      const isPageLink =
+        /^\d+$/.test(label) ||
+        /^(上一页|下一页|上一页|上页|下页|Next|Previous|›|‹|>|»|<)/i.test(label) ||
+        /^第\s*\d+\s*页$/.test(ariaLabel);
+      if (!isPageLink) continue;
+
+      // 去重：同一页可能同时有 aria-label 与文本命中
+      const key = ariaLabel || label;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      pages.push({
+        label,
+        // 相对地址补全为绝对地址；当前页无 href
+        href: rawHref ? safeAbsoluteUrl(rawHref) : null,
+        ariaLabel: ariaLabel || label,
+        current: isCurrent,
+      });
+    }
   }
 
   return pages;
+}
+
+/** 相对地址转绝对；解析失败时返回原值，避免整个流程崩掉 */
+function safeAbsoluteUrl(href: string): string {
+  try {
+    return new URL(href, location.origin).href;
+  } catch {
+    return href;
+  }
 }
 
 /** 构建分页导航 */
