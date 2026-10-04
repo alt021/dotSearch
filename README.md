@@ -80,9 +80,16 @@ npm run watch
 
 ### 方式 C：正式发布后自动更新
 
-推到 GitHub 后，`npm run build` 产物的 `@updateURL` 指向
-`raw.githubusercontent.com/alt021/...`，Tampermonkey 会自动检查并升级。
-用户侧同样只需打开那个 URL 首次安装。
+`meta.ts` 里正式版的 `@updateURL` / `@downloadURL` 指向
+`raw.githubusercontent.com/alt021/search-enhance/main/dist/search-enhance.user.js`。
+配好之后，Tampermonkey 会自动检查并升级，用户侧只需打开那个 URL 首次安装。
+
+> **注意**：仓库当前**不提交 `dist/`**（它属于生成物，见上表）。
+> 因此上面那个地址目前取不到文件，方式 C 要等下面任一件事做完才可用：
+>
+> - 加一个 CI（如 GitHub Actions）在推送时构建并发布产物；
+> - 或改主意把 `dist/search-enhance.user.js` 纳入版本控制；
+> - 或把构建产物挂到 Release，让 `@updateURL` 指向 Release 资产地址。
 
 ---
 
