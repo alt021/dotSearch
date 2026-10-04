@@ -1,34 +1,34 @@
 /**
  * 抓取真实 Bing 结果页（含分页），供离线验证使用。
  *
- * 用本机 Chromium 打开真实搜索页，提取页面 HTML 与分页控件结构。
- * 代理不可用时可用本机直连。
+ * 用本机 Chromite 打开真实搜索页，提取页面 HTML 与分页控件结构。
+ * 首次访问会带 Cookie 目录，避免被 Bing 重定向打断抓取。
  *
  *   node scripts/fetch-sample.mjs [查询词] [起始序号]
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const { chromium } = require(
-  'C:/Users/AmeXE2/.workbuddy/binaries/node/workspace/node_modules/playwright-core',
-);
+import { launchChromitePersistent, PROFILE_DIR } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const CHROME = 'C:/Users/AmeXE2/Documents/Programs/Chromite/chrome.exe';
 const keyword = process.argv[2] ?? '网络开发';
 const first = process.argv[3] ?? '11';
 
 mkdirSync(join(root, '.build'), { recursive: true });
 
-const browser = await chromium.launch({ executablePath: CHROME });
-const page = await browser.newPage({ locale: 'zh-CN' });
+const context = await launchChromitePersistent(PROFILE_DIR, { locale: 'zh-CN' });
+const page = context.pages()[0] ?? (await context.newPage());
 
 const url = `https://www.bing.com/search?q=${encodeURIComponent(keyword)}&setlang=zh-CN&first=${first}`;
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
 await page.waitForSelector('li.b_algo', { timeout: 20_000 }).catch(() => {});
+/*
+ * 分页控件渲染晚于结果条目，必须单独等。
+ * 只等 li.b_algo 就截图时，快照里会缺 #b_pag ——
+ * 离线验证随即失去分页覆盖（实测踩过一次），且这种缺失不易察觉。
+ */
+await page.waitForSelector('#b_pag', { timeout: 10_000 }).catch(() => {});
 
 // 解析分页控件结构
 const pag = await page.evaluate(() => {
@@ -57,4 +57,4 @@ if (pag.exists) {
   for (const l of pag.links) console.log(`  「${l.text}」${l.className} → ${l.href}`);
 }
 
-await browser.close();
+await context.close();

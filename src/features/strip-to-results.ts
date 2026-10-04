@@ -2,6 +2,7 @@ import type { Feature } from '../types/feature.js';
 import type { EngineAdapter, SearchResult } from '../types/engine.js';
 import { log } from '../core/env.js';
 import { captureBingSession } from './bing-session.js';
+import { getRules, matchRule, type FilterRule } from './filter-store.js';
 
 /**
  * 结果页重写：把 Bing 结果页替换为「搜索框 + 干净的结果列表」。
@@ -79,6 +80,44 @@ export const MENU_SLOT_CLASS = 'se-menu-slot';
  * 而 pagetual-bridge 也要从这里采出新加载的结果。
  */
 export const SOURCE_ID = 'se-source';
+
+/**
+ * 结果列表容器 id。
+ * 过滤设置改动后按此定位列表整表重建。
+ */
+export const LIST_ID = 'se-list';
+
+/** 缓存本次重写时的解析结果，供过滤规则变化后重建列表 */
+let lastSearchResults: SearchResult[] = [];
+
+/**
+ * 按当前过滤规则重建整个结果列表。
+ *
+ * 由设置面板在规则变化后调用。之所以整表重建而不是就地打补丁：
+ * 过滤规则是全局性的 —— 改一条规则可能影响任意条目，
+ * 且隐藏态会把条目降级（删摘要、摘链接），恢复时又得拼回去。
+ * 逐个打补丁的状态机远比重建复杂，也更容易留下不一致。
+ *
+ * @returns 是否有可重建的列表（false 表示当前页面没有结果列表）
+ */
+export function rerenderResults(): boolean {
+  const list = document.getElementById(LIST_ID);
+  if (!list || lastSearchResults.length === 0) return false;
+
+  const rules = getRules();
+  list.textContent = '';
+  list.append(...buildResultItems(lastSearchResults, 0, rules));
+  log.info(`已按 ${rules.length} 条过滤规则重建列表`);
+  return true;
+}
+
+/**
+ * 当前页面上实际可见（未被隐藏）的结果条数。
+ * 页头统计用得上，也便于验证脚本断言。
+ */
+export function countVisibleResults(): number {
+  return document.querySelectorAll('.se-item:not(.se-item-hidden)').length;
+}
 
 /**
  * 把 body 现有内容整体移入隐藏容器。
@@ -232,6 +271,8 @@ export const stripToResults: Feature = {
     }
 
     if (results.length > 0) {
+      // 记下解析结果，供设置改动后重建列表（见 rerenderResults）
+      lastSearchResults = results;
       main.appendChild(buildResultList(results));
       if (pages.length > 0) {
         main.appendChild(buildPagination(pages));
@@ -259,6 +300,9 @@ export const stripToResults: Feature = {
 
     root.appendChild(main);
     document.body.appendChild(root);
+
+    // 隐藏结果的「单击展开」用事件委托，无需给每个条目单独绑定
+    bindHiddenToggle(root);
 
     // 补上依赖动态状态的一小段规则；主体样式由 Runner 统一注入
     const style = document.createElement('style');
@@ -380,6 +424,7 @@ export function updateResultCount(total: number): void {
 function buildResultList(results: SearchResult[]): HTMLElement {
   const list = document.createElement('ol');
   list.className = 'se-list';
+  list.id = LIST_ID;
   list.append(...buildResultItems(results, 0));
   return list;
 }
@@ -396,6 +441,7 @@ function buildResultList(results: SearchResult[]): HTMLElement {
 export function buildResultItems(
   results: SearchResult[],
   startIndex: number,
+  rules: FilterRule[] = getRules(),
 ): HTMLElement[] {
   return results.map((result, offset) => {
     const item = document.createElement('li');
@@ -423,6 +469,14 @@ export function buildResultItems(
 
     const heading = document.createElement('h2');
     heading.className = 'se-title';
+
+    // badge 命中时，在标题文字**之前**插入「已排除」标签。
+    // hide 不走这里 —— 它整条换成占位，见下方 hideItemBody。
+    const hitRule = matchRule(href, rules);
+    if (hitRule?.action === 'badge') {
+      heading.appendChild(buildFilterTag());
+    }
+
     const anchor = document.createElement('a');
     anchor.className = 'se-link';
     anchor.textContent = result.title || result.displayUrl || '(无标题)';
@@ -453,8 +507,184 @@ export function buildResultItems(
     applyLinkAttrs(hit, href);
 
     item.append(num, hit, body);
+
+    /*
+     * 把「恢复隐藏项」所需的地址留在节点上。
+     *
+     * 只存 href：标题与摘要的 DOM 节点是**整块搬走并留存引用**的
+     * （见 hideItemBody），恢复时原样放回，
+     * 不需要（也不该）再从字符串重拼一遍。
+     */
+    if (href) item.dataset.seHref = href;
+
+    /*
+     * 隐藏态：整条降级为「占位」。
+     *
+     * 占位条上只留一个「该结果已隐藏」，
+     * 位置正是正常条目的**链接所在处**（body 栏内、来源行那一行）——
+     * 标题与摘要一并撤掉，不再以灰字形式残留。
+     * 用户点任意位置即可恢复，恢复后才把标题/摘要重新放回去。
+     *
+     * href 要摘掉：占位条不是个链接，不该有「点开就跳走」的语义，
+     * 也不该被浏览器当成可聚焦的链接（那会在点击时冒出焦点框）。
+     */
+    if (hitRule?.action === 'hide') {
+      item.classList.add('se-item-hidden');
+      hit.removeAttribute('href');
+      hideItemBody(body);
+    }
+
     return item;
   });
+}
+
+/**
+ * 把 body 栏的内容换成单个「该结果已隐藏」占位。
+ *
+ * 用「移出文档并留存引用」而非直接删除：
+ * 标题锚点与摘要在恢复时原样放回即可，
+ * 不必重新拼字符串 —— 标题里可能含 HTML 实体或特殊字符，
+ * 往返一次既慢又有走样风险。
+ *
+ * 留存方式：把原标题/摘要的节点整体搬进一个游离容器（不在文档里），
+ * 引用挂在 body 上。恢复时原样搬回即可 ——
+ * 不必重新拼字符串，标题里含 HTML 实体或特殊字符也不会走样。
+ * 游离容器随 body 一起被回收，不留泄漏。
+ */
+function hideItemBody(body: HTMLElement): void {
+  // 已隐藏过就不重复处理（重渲染与永页机追加都可能再走到这里）
+  if (body.dataset.seHidden) return;
+  body.dataset.seHidden = '1';
+
+  // 把原标题/摘要收进一个游离容器，恢复时整体放回
+  const stash = document.createElement('div');
+  while (body.firstChild) stash.appendChild(body.firstChild);
+  (body as unknown as Record<string, unknown>).__seStash = stash;
+
+  const placeholder = document.createElement('p');
+  placeholder.className = 'se-tag se-tag-hidden';
+  placeholder.textContent = '该结果已隐藏';
+  body.appendChild(placeholder);
+}
+
+/**
+ * 反向操作：撤掉占位，把原先的标题与摘要放回。
+ */
+function restoreItemBody(body: HTMLElement): void {
+  if (!body.dataset.seHidden) return;
+  delete body.dataset.seHidden;
+
+  const stash = (body as unknown as Record<string, unknown>).__seStash as
+    | HTMLElement
+    | undefined;
+  if (stash) {
+    body.textContent = '';
+    while (stash.firstChild) body.appendChild(stash.firstChild);
+    delete (body as unknown as Record<string, unknown>).__seStash;
+    return;
+  }
+
+  // 理论上到不了这里；真到了就只清掉占位，避免卡在半隐藏态
+  body.textContent = '';
+}
+
+/**
+ * 「已排除」标签：置于标题文字之前的小字标记。
+ *
+ * 只由 badge 使用。hide 的「该结果已隐藏」不走这里 ——
+ * 它是整条占位的唯一内容，位置在链接处而非标题前（见 hideItemBody）。
+ */
+function buildFilterTag(): HTMLElement {
+  const tag = document.createElement('span');
+  tag.className = 'se-tag se-tag-excluded';
+  tag.textContent = '已排除';
+  tag.setAttribute('aria-hidden', 'true');
+  return tag;
+}
+
+/*
+ * ============ 隐藏结果的单击展开 ============
+ *
+ * 用事件委托绑在根容器上，而不是逐条绑定：
+ * 条目会被增量追加（永页机协同）与整表重建（改动过滤规则），
+ * 逐条绑定必然漏掉后来者。
+ */
+const TOGGLE_BOUND = '__seFilterToggleBound__';
+
+function bindHiddenToggle(root: HTMLElement): void {
+  const flag = root as unknown as Record<string, unknown>;
+  if (flag[TOGGLE_BOUND]) return;
+  flag[TOGGLE_BOUND] = true;
+
+  /*
+   * 在 mousedown 就拦下默认行为。
+   *
+   * 浏览器「按下鼠标即聚焦」——聚焦后若元素可聚焦，
+   * 会画出焦点环。占位条本身不可聚焦（无 href、无 tabindex），
+   * 但点击仍可能让**祖先**拿到 :focus-within，
+   * 于是整条套上一个红框。这里阻止按下时的默认聚焦动作，
+   * 从源头断掉焦点环的产生。
+   * 只在真正命中占位条时拦，避免影响正常条目的点击与文本选择。
+   */
+  root.addEventListener(
+    'mousedown',
+    (event) => {
+      const target = event.target as Element | null;
+      if (target?.closest('.se-item-hidden')) event.preventDefault();
+    },
+    true,
+  );
+
+  root.addEventListener(
+    'click',
+    (event) => {
+      const target = event.target as Element | null;
+      // 点在标题链接或整条链接上时，交给它们各自处理（正常跳转）
+      if (target?.closest('a.se-link, a.se-hit[href]')) return;
+      const item = target?.closest<HTMLElement>('.se-item-hidden');
+      if (!item) return;
+      // 占位条上没有真实链接，不会误跳转，只需阻止默认行为
+      event.preventDefault();
+      revealItem(item);
+    },
+    // 捕获阶段：占位条的覆盖锚点虽被移除了 href，仍可能吞掉事件
+    true,
+  );
+}
+
+/**
+ * 让一条隐藏的结果恢复为正常条目。
+ *
+ * 用「重放」而非「重算」：
+ * 该条目当初就是按正常规则构建的，只是随后被降级了；
+ * 因此从节点上留存的引用与 dataset 里取回原始内容即可，
+ * 无需再解析一遍搜索页。
+ *
+ * 恢复后与用户从未隐藏过的条目无任何区别 ——
+ * 占位文字撤除，标题、来源、摘要原样归位。
+ */
+function revealItem(item: HTMLElement): void {
+  const body = item.querySelector<HTMLElement>('.se-body');
+  const href = item.dataset.seHref;
+  if (!body) return;
+
+  // 撤掉占位标记，把标题与摘要放回
+  item.classList.remove('se-item-hidden');
+  restoreItemBody(body);
+
+  /*
+   * 恢复覆盖锚点的地址与可点性。
+   *
+   * aria-hidden 与 tabIndex 保持不动：
+   * 正常条目上也一直带着 aria-hidden="true"（它是无文字内容的拉伸链接，
+   * 文字由 .se-link 承担，重复播报没有意义），tabIndex 同理是构建时设好的。
+   * 早期版本在这里 removeAttribute —— 结果解除隐藏的条目
+   * 比普通条目少一个属性，正是「无任何区别」最忌讳的偏差。
+   */
+  const hit = item.querySelector<HTMLAnchorElement>('.se-hit');
+  if (hit && href) applyLinkAttrs(hit, href);
+
+  log.info('已解除隐藏：', item.dataset.seHref);
 }
 
 /** 为锚点写入地址与打开方式（新标签页，且不泄漏 referrer） */

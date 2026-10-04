@@ -21,10 +21,14 @@
 import type { Feature } from '../types/feature.js';
 import { log } from '../core/env.js';
 import { getBingSession } from './bing-session.js';
-import { MENU_SLOT_CLASS } from './strip-to-results.js';
+import { MENU_SLOT_CLASS, rerenderResults } from './strip-to-results.js';
+import { openFilterPanel } from './filter-panel.js';
 
 /** 菜单按钮的类名（同时也是幂等判据） */
 export const MENU_BUTTON_CLASS = 'se-menu-btn';
+
+/** 「结果过滤设置」按钮的类名，验证脚本据此定位 */
+export const FILTER_ENTRY_CLASS = 'se-menu-filter';
 
 /** 弹出面板 id，供 aria-controls 引用 */
 const POPUP_ID = 'se-menu-popup';
@@ -133,6 +137,13 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
   nav.className = 'se-menu-nav';
   nav.setAttribute('aria-label', '必应功能入口');
 
+  /*
+   * 结果过滤设置放在最前。
+   * 它是本脚本自己的功能，与后面三个「原站入口替代品」性质不同，
+   * 放最前也最容易被找到。
+   */
+  nav.appendChild(buildFilterEntry());
+
   for (const entry of [buildAccountEntry(), ...FIXED_ENTRIES]) {
     const a = document.createElement('a');
     a.className = 'se-menu-link';
@@ -161,6 +172,35 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
 
   popup.appendChild(nav);
   return { button, popup };
+}
+
+/**
+ * 「结果过滤设置」入口。
+ *
+ * 与其他条目不同，它是 <button> 而非 <a> ——
+ * 这里不跳转，只打开一层设置浮层。
+ * 但仍套一层 span，理由与其他条目一致：
+ * 挡住外部样式表可能加在链接 / 按钮上的 text-decoration，
+ * 那类装饰不会传播进原子行内元素。
+ */
+function buildFilterEntry(): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `se-menu-link ${FILTER_ENTRY_CLASS}`;
+  button.setAttribute('role', 'menuitem');
+
+  const label = document.createElement('span');
+  label.className = 'se-menu-label';
+  label.textContent = '结果过滤设置';
+
+  button.appendChild(label);
+  button.addEventListener('click', () => {
+    openFilterPanel(() => {
+      // 规则变化后立即重建列表，用户关不关面板都能看到效果
+      if (!rerenderResults()) log.warn('未找到结果列表，过滤改动将在下次重写后生效');
+    });
+  });
+  return button;
 }
 
 /** 绑定开关与关闭行为 */

@@ -14,29 +14,18 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-const { chromium } = require(
-  'C:/Users/AmeXE2/.workbuddy/binaries/node/workspace/node_modules/playwright-core',
-);
+import { launchChromite } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-// 第一个非 flag 参数才当作样例路径，避免 --dark 之类被误认成路径
+// 第一个非 flag 参数才当作样例路径，避免 --dark 之类被误认成路径。
+// 默认用本仓库自己的快照（scripts/fetch-sample.mjs 写入此处），
+// 而不是某个绝对临时路径 —— 后者换台机器就失效，且失败原因不直观。
 const samplePath =
-  process.argv.slice(2).find((a) => !a.startsWith('--')) ??
-  'C:/Users/AmeXE2/AppData/Local/Temp/bing_sample.html';
-
-/** 本机 Chromium（沙箱内无法直接启动，需在沙箱外运行本脚本） */
-const CHROME = 'C:/Users/AmeXE2/Documents/Programs/Chromite/chrome.exe';
+  process.argv.slice(2).find((a) => !a.startsWith('--')) ?? join(root, '.build', 'bing-live.html');
 
 if (!existsSync(samplePath)) {
   console.error(`找不到样例 HTML：${samplePath}`);
   console.error('请先抓取 Bing 结果页，或用第一个命令行参数指定路径。');
-  process.exit(2);
-}
-if (!existsSync(CHROME)) {
-  console.error(`找不到浏览器：${CHROME}`);
   process.exit(2);
 }
 
@@ -57,7 +46,7 @@ const { port } = server.address();
 // 带上 q 参数，让页头能显示查询词与统计（样例快照的 URL 本就没有）
 const pageUrl = `http://127.0.0.1:${port}/bing.html?q=test`;
 
-const browser = await chromium.launch({ executablePath: CHROME });
+const browser = await launchChromite();
 // 视口需足够高：默认 1280×720 会让测试目标落到视口外，
 // 导致 mouse.move 的坐标无效、悬停断言误判为「未生效」。
 const page = await browser.newPage({
@@ -195,12 +184,27 @@ const after = await page.evaluate(() => ({
    *
    * 同样按「可见区」计数：必应页脚的备案 / 隐私 / 条款链接随原站 DOM
    * 一起被搬进了隐藏数据源，它们不该算作「可见区里的残留」。
+   *
+   * 顺带记下前几条的内容与所在容器：断言失败时若只说「有 1 条」，
+   * 还得再跑一轮才能知道是哪条、残留在哪 —— 直接把线索带上。
    */
-  complianceLinks: [...document.querySelectorAll('a[href]')].filter(
-    (a) =>
-      !a.closest('#se-source') &&
-      /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
-  ).length,
+  compliance: (() => {
+    const hit = [...document.querySelectorAll('a[href]')].filter(
+      (a) =>
+        // 隐藏数据源里的不算
+        !a.closest('#se-source') &&
+        // 结果条目里的不算：结果标题同样可能出现「协议」这类词
+        // （实测有「…快速理解网络通信协议」，只按词匹配会误伤正经结果）
+        !a.closest('.se-item') &&
+        /隐私|条款|协议|备案|ICP|公网安备|privacy|terms|legal/i.test(a.textContent ?? ''),
+    );
+    return {
+      count: hit.length,
+      samples: hit
+        .slice(0, 3)
+        .map((a) => `「${(a.textContent ?? '').trim().slice(0, 16)}」@#${a.closest('[id]')?.id ?? '?'}`),
+    };
+  })(),
   // 视觉调整：红线移除 / 选择禁用 / 悬停反馈扩展
   visual: {
     // ::before 伪元素内容应为空（即无红线）
@@ -449,7 +453,10 @@ const menuState = async () =>
       linkCount: links.length,
       links: links.map((a) => ({
         label: (a.textContent ?? '').trim(),
-        href: a.getAttribute('href') ?? '',
+        tag: a.tagName,
+        // <button> 没有 href，getAttribute 返回 null；
+        // 保留 null 而不是 ''，好让断言能区分「没有 href」与「href 为空串」
+        href: a.getAttribute('href'),
         target: a.getAttribute('target') ?? '',
         rel: a.getAttribute('rel') ?? '',
       })),
@@ -598,7 +605,10 @@ console.log(
   `  3 分页：${after.pagination.count} 个` +
     `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
 );
-console.log(`  4 合规链接残留：${after.complianceLinks}（应为 0）`);
+console.log(
+  `  4 合规链接残留：${after.compliance.count}（应为 0）` +
+    (after.compliance.count > 0 ? `  ${after.compliance.samples.join(' ')}` : ''),
+);
 console.log('=== 链接行为 ===');
 for (const [name, s] of [
   ['标题 .se-link', linkAttrs.link],
@@ -629,7 +639,11 @@ console.log(
     ` inert=${menuOpen.popupInert} aria-expanded=${menuOpen.expanded}`,
 );
 for (const l of menuOpen.links) {
-  console.log(`     ${l.label} → ${l.href.slice(0, 56)}  target=${l.target} rel=${l.rel}`);
+  const dest = l.tag === 'BUTTON' ? '(打开设置浮层)' : l.href.slice(0, 56);
+  console.log(
+    `     [${l.tag}] ${l.label} → ${dest}` +
+      (l.tag === 'A' ? `  target=${l.target} rel=${l.rel}` : ''),
+  );
 }
 console.log(
   `  Esc 关闭：popup display=${menuAfterEsc.popupDisplay}` +
@@ -714,9 +728,20 @@ const menuOk =
   menuOpen.expanded === 'true' &&
   // 弹出层锚定在按钮下方
   menuOpen.popupPosition === 'absolute' &&
-  menuOpen.linkCount === 3 &&
-  menuOpen.links.every(
+  // 共 4 项：本脚本的「结果过滤设置」+ 3 个原站入口替代品
+  menuOpen.linkCount === 4 &&
+  /*
+   * 首个条目是「结果过滤设置」，它是 <button> 而非 <a>：
+   * 它不跳转，只打开设置浮层，因此不该有 href / target。
+   * 用 href === null 与后面三条的 href.startsWith('http') 区分开 ——
+   * 若哪天它被误改成 <a href="javascript:void(0)">，这里会立刻报错。
+   */
+  menuOpen.links[0]?.label === '结果过滤设置' &&
+  menuOpen.links[0]?.tag === 'BUTTON' &&
+  menuOpen.links[0]?.href === null &&
+  menuOpen.links.slice(1).every(
     (l) =>
+      l.tag === 'A' &&
       l.href.startsWith('http') &&
       l.target === '_blank' &&
       l.rel.includes('noopener'),
@@ -738,7 +763,7 @@ const pass =
   menuOk &&
   after.search.inMasthead &&
   after.search.oldSearchBarGone &&
-  after.complianceLinks === 0 &&
+  after.compliance.count === 0 &&
   queryState.restored &&
   queryState.hover.style === 'dashed' &&
   // 聚焦时虚线框应「不可见」：宽度归零即为不可见
@@ -775,7 +800,7 @@ for (const [k, v] of Object.entries({
   menuOk,
   inMasthead: after.search.inMasthead,
   oldSearchBarGone: after.search.oldSearchBarGone,
-  complianceLinks: after.complianceLinks === 0,
+  complianceLinks: after.compliance.count === 0,
   restored: queryState.restored,
   hoverStyle: queryState.hover.style === 'dashed',
   focusedWidth: queryState.focused.width === '0px',
@@ -875,6 +900,488 @@ const pagerOk =
 console.log(pagerOk ? '  ✅ 协同正确' : '  ❌ 协同不符预期');
 
 /* ==========================================================================
+   结果过滤
+   --------------------------------------------------------------------------
+   用户需求原文：
+     「用户可以设置多个域名，并选择给对应域名的搜索结果标题前添加
+       “已排除”标签或直接隐藏对应项目。隐藏的项目不是直接完全删除该结果，
+       而是保留结果序号，并在标题部分灰字显示“该结果已隐藏”，
+       用户可以单击该隐藏的结果来让其正常显示，
+       被用户激活正常显示后与其他搜索项无任何区别」
+
+   拆成五件事逐一断言（按用户措辞的顺序）：
+     1. 菜单里能打开设置浮层，能添加 / 切换 / 删除规则
+     2. badge 规则 → 标题前出现「已排除」，结果本身照常可点
+     3. hide  规则 → 序号保留、标题区灰字「该结果已隐藏」、不可跳转
+     4. 单击隐藏项 → 恢复为正常条目（拿回 href、摘要、样式）
+     5. 恢复后与普通条目完全一致（不是「看起来像」，是逐个字段相等）
+   另外验证父域匹配（csdn.net 命中 blog.csdn.net）与规则跨刷新持久化。
+
+   样例页里可用的真实域名（见 .build/bing-live.html）：
+     blog.csdn.net    2 条
+     zhuanlan.zhihu.com / www.zhihu.com
+   ========================================================================== */
+
+/** 读一条结果的可观测状态：隐藏与否、标签、序号、链接、摘要、灰度 */
+const inspectItems = () =>
+  page.evaluate(() => {
+    const items = [...document.querySelectorAll('.se-item')];
+    return items.map((li) => {
+      const link = li.querySelector('.se-link');
+      const hit = li.querySelector('.se-hit');
+      const tag = li.querySelector('.se-tag');
+      const snippet = li.querySelector('.se-snippet');
+      return {
+        num: (li.querySelector('.se-num')?.textContent ?? '').trim(),
+        hidden: li.classList.contains('se-item-hidden'),
+        tagText: tag ? tag.textContent.trim() : null,
+        tagClass: tag ? tag.className : null,
+        // 标签必须排在标题之前（用户原话「标题前」）
+        tagBeforeTitle: !!(tag && link && tag.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING),
+        title: (link?.textContent ?? '').trim(),
+        href: hit?.getAttribute('href') ?? null,
+        hasSnippet: !!snippet,
+        // 隐藏项标题应呈灰字：取实际计算色，避免只看 class 的假阳性
+        linkColor: link ? getComputedStyle(link).color : null,
+        citeColor: li.querySelector('.se-cite')
+          ? getComputedStyle(li.querySelector('.se-cite')).color
+          : null,
+      };
+    });
+  });
+
+/** 清空规则，供各段落之间复位 */
+const clearRulesDirect = () =>
+  page.evaluate(() => localStorage.removeItem('search-enhance:filter-rules'));
+
+await clearRulesDirect();
+
+/* ---------- 1. 设置浮层：打开 → 添加 → 切换 → 删除 ---------- */
+
+/*
+ * 菜单此刻是收起状态（上面按过 Esc），需要重新展开。
+ * 用与前面相同的兜底策略：pointerdown 与真实点击走同一个监听器。
+ */
+await page.evaluate(() => {
+  const btn = document.querySelector('.se-menu-btn');
+  btn?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+});
+await page.waitForTimeout(200);
+
+const filterEntryExists = await page.evaluate(
+  () => !!document.querySelector('#se-menu-popup .se-menu-filter'),
+);
+
+/*
+ * 点「结果过滤设置」。
+ *
+ * 不用 locator.click()：该按钮位于 popup 内，而 popup 的父级
+ * .se-brand-row 在本环境被 Playwright 误判为「遮挡」（与菜单按钮同因，
+ * 见上文 clickMenuButton 的注释）。直接派发 click ——
+ * 我们注册的就是 click 监听器，走的仍是真实代码路径。
+ */
+const panelOpened = await page.evaluate(() => {
+  const btn = document.querySelector('#se-menu-popup .se-menu-filter');
+  if (!btn) return false;
+  btn.click();
+  return !!document.querySelector('.se-filter-panel');
+});
+
+await page.waitForTimeout(150);
+
+// 通过面板 UI 添加两条规则（走真实的输入 + 按钮路径）
+const added = await page.evaluate(() => {
+  const input = document.querySelector('.se-filter-add .se-filter-input');
+  const select = document.querySelector('.se-filter-add .se-filter-select');
+  const btn = document.querySelector('.se-filter-add .se-filter-add-btn');
+  if (!input || !select || !btn) return { ok: false, reason: '缺少新增行控件' };
+
+  const submit = (value, action) => {
+    input.value = value;
+    select.value = action;
+    btn.click();
+  };
+  // 故意写完整网址，验证规范化（用户很可能直接粘贴地址）
+  submit('https://blog.csdn.net/qq_54823875/article/details/119358194', 'hide');
+  submit('zhihu.com', 'badge');
+
+  const stored = JSON.parse(localStorage.getItem('search-enhance:filter-rules') ?? '[]');
+  const rows = document.querySelectorAll('.se-filter-row').length;
+  return { ok: true, stored, rows };
+});
+
+// 无效输入应被拒绝（不写存储、给出可见提示）
+const invalidRejected = await page.evaluate(() => {
+  const before = localStorage.getItem('search-enhance:filter-rules');
+  const input = document.querySelector('.se-filter-add .se-filter-input');
+  const btn = document.querySelector('.se-filter-add .se-filter-add-btn');
+  input.value = '不是域名';
+  btn.click();
+  const after = localStorage.getItem('search-enhance:filter-rules');
+  return {
+    unchanged: before === after,
+    marked: input.classList.contains('se-filter-input-invalid'),
+  };
+});
+
+// 重复添加同域名应「改动作」而非堆两条
+const deduped = await page.evaluate(() => {
+  const input = document.querySelector('.se-filter-add .se-filter-input');
+  const select = document.querySelector('.se-filter-add .se-filter-select');
+  const btn = document.querySelector('.se-filter-add .se-filter-add-btn');
+  input.value = 'blog.csdn.net';
+  select.value = 'hide';
+  btn.click();
+  return JSON.parse(localStorage.getItem('search-enhance:filter-rules') ?? '[]');
+});
+
+// 改 selects 的 action：把 csdn 从 hide 改成 badge
+const toggled = await page.evaluate(() => {
+  const rows = [...document.querySelectorAll('.se-filter-row')];
+  const target = rows.find(
+    (r) => r.querySelector('.se-filter-domain')?.value === 'blog.csdn.net',
+  );
+  const select = target?.querySelector('.se-filter-action');
+  if (!select) return null;
+  select.value = 'badge';
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+  return JSON.parse(localStorage.getItem('search-enhance:filter-rules') ?? '[]');
+});
+
+console.log('=== 结果过滤：设置浮层 ===');
+console.log(`  菜单入口「结果过滤设置」：${filterEntryExists ? '存在' : '缺失'}`);
+console.log(`  点击后浮层打开：${panelOpened}`);
+console.log(
+  `  通过 UI 添加两条：行数=${added.rows ?? '-'}  存储=${JSON.stringify(added.stored ?? [])}`,
+);
+console.log(`  无效输入被拒：存储未变=${invalidRejected.unchanged}  标记=${invalidRejected.marked}`);
+console.log(`  重复添加同域名：${JSON.stringify(deduped)}`);
+console.log(`  切换动作后：${JSON.stringify(toggled ?? [])}`);
+
+const panelOk =
+  filterEntryExists &&
+  panelOpened &&
+  added.ok &&
+  added.rows === 2 &&
+  // 完整网址被规范化成纯域名
+  added.stored.some((r) => r.domain === 'blog.csdn.net' && r.action === 'hide') &&
+  added.stored.some((r) => r.domain === 'zhihu.com' && r.action === 'badge') &&
+  invalidRejected.unchanged &&
+  invalidRejected.marked &&
+  // 去重后仍是两条，且动作被覆盖
+  deduped.length === 2 &&
+  deduped.find((r) => r.domain === 'blog.csdn.net')?.action === 'hide' &&
+  toggled !== null &&
+  toggled.find((r) => r.domain === 'blog.csdn.net')?.action === 'badge';
+
+/*
+ * 面板保持打开 —— 下面 badge 段落要先断言，再在面板内把两条规则改成 hide。
+ * 浮层用 position: fixed 居中，不遮挡结果列表的读取
+ * （inspectItems 走的是 DOM 查询，不受遮挡影响）。
+ */
+
+/* ---------- 2. badge：「已排除」标签 ---------- */
+
+/*
+ * 此刻两条规则都是 badge（csdn 与 zhihu）。
+ * csdn 规则写的是 blog.csdn.net，样例里还有 zhuanlan.zhihu.com / www.zhihu.com；
+ * 后两者应由 zhihu.com 这条父域规则命中 —— 顺带验证父域匹配。
+ */
+await page.waitForTimeout(200);
+const badgeState = await inspectItems();
+const badgeItems = badgeState.filter((i) => i.tagText === '已排除');
+
+console.log('=== 结果过滤：badge（已排除）===');
+console.log(`  带「已排除」标签的结果：${badgeItems.length} 条 / 共 ${badgeState.length} 条`);
+for (const i of badgeState) {
+  console.log(
+    `     ${i.num} [${i.tagText ?? '—'}] ${i.title.slice(0, 34)}` +
+      `  hidden=${i.hidden} href=${i.href ? '有' : '无'}`,
+  );
+}
+
+const badgeOk =
+  // 至少命中 csdn 2 条 + zhihu 3 条
+  badgeItems.length >= 5 &&
+  // csdn 与 zhihu 两类都应命中（前者按精确子域，后者按父域）
+  badgeItems.some((i) => i.title.includes('CSDN')) &&
+  badgeItems.some((i) => i.title.includes('知乎')) &&
+  // 标签必须在标题文字之前（compareDocumentPosition 已解析为布尔）
+  badgeItems.every((i) => i.tagBeforeTitle) &&
+  // badge 只是提示，结果本身完全正常：不隐藏、可跳转、摘要还在
+  badgeItems.every((i) => !i.hidden && i.href && i.hasSnippet) &&
+  // 未命中的结果一个标签都不该有
+  badgeState.filter((i) => i.tagText === null).length > 0 &&
+  badgeState.filter((i) => i.tagText === null).every((i) => !i.hidden && i.href);
+
+console.log(badgeOk ? '  ✅ badge 正确' : '  ❌ badge 不符预期');
+
+/* ---------- 3. hide：保留序号 + 灰字「该结果已隐藏」 ---------- */
+
+/*
+ * 把两条规则都改成 hide。
+ *
+ * 这里刻意**通过面板 UI 改**，而不是直接写 storage 再重载：
+ * 「改完立刻看到效果」是本功能的承诺，绕开 UI 测不到这条路径。
+ * （先前版本直接写 storage 后期望列表自动重建 —— 那是不成立的，
+ *   存储变更只由面板的 onApply 回调触发重渲染。）
+ * 面板此刻仍开着，逐行改 select 并派发 change 即可。
+ */
+const switchedToHide = await page.evaluate(() => {
+  const seen = [];
+  /*
+   * 每轮都重新查询行。
+   *
+   * commit() → render() 会把所有行节点整体重建（textContent = '' 再重画），
+   * 因此在循环外缓存 rows 数组是错的：第一轮之后手里的节点已脱离文档，
+   * 后续轮次的 change 派发到孤岛上，既不会写存储也不会重渲染。
+   * 这是本验证脚本踩过的坑，不是实现的问题 —— 用 while 按域名重取。
+   */
+  const domains = ['blog.csdn.net', 'zhihu.com'];
+  for (const domain of domains) {
+    const row = [...document.querySelectorAll('.se-filter-row')].find(
+      (r) => r.querySelector('.se-filter-domain')?.value === domain,
+    );
+    const select = row?.querySelector('.se-filter-action');
+    if (!select) continue;
+    select.value = 'hide';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+    seen.push({
+      domain,
+      hidden: document.querySelectorAll('.se-item-hidden').length,
+    });
+  }
+  return seen;
+});
+
+console.log('  逐行改为 hide 后的即时隐藏数：' + JSON.stringify(switchedToHide));
+
+// 关掉面板再断言（面板会挡住点击坐标）
+await page.evaluate(() => document.querySelector('.se-filter-close')?.click());
+await page.waitForTimeout(250);
+
+const hideState = await inspectItems();
+const hiddenItems = hideState.filter((i) => i.hidden);
+
+console.log('=== 结果过滤：hide（隐藏）===');
+console.log(`  隐藏条目：${hiddenItems.length} / ${hideState.length}`);
+for (const i of hiddenItems) {
+  console.log(
+    `     序号「${i.num}」 标签「${i.tagText}」 href=${i.href} 摘要=${i.hasSnippet}` +
+      ` 标题色=${i.linkColor}`,
+  );
+}
+// 序号保留：把所有序号连起来看是否仍是连续 01..N（说明没有被删掉重排）
+const nums = hideState.map((i) => i.num).join(',');
+const expectNums = hideState
+  .map((_, idx) => String(idx + 1).padStart(2, '0'))
+  .join(',');
+
+console.log(`  全部序号：${nums}`);
+console.log(`  序号连续（未被删除重排）：${nums === expectNums}`);
+console.log(
+  `  其余条目序号取到的最大值为隐藏项序号：` +
+    `${hiddenItems.every((h) => nums.split(',').includes(h.num))}`,
+);
+
+const hideOk =
+  // csdn 2 条 + zhihu 3 条 = 5 条
+  hiddenItems.length === 5 &&
+  // 序号保留：整列序号仍是 01..N 连续，隐藏项没有被摘掉
+  nums === expectNums &&
+  // 标题区灰字「该结果已隐藏」
+  hiddenItems.every((i) => i.tagText === '该结果已隐藏') &&
+  hiddenItems.every((i) => i.tagClass?.includes('se-tag-hidden')) &&
+  hiddenItems.every((i) => i.tagBeforeTitle) &&
+  // 仍是灰字：与正常条目的标题色不同（取未隐藏条目的色作对照）
+  hiddenItems.every((i) => {
+    const normal = hideState.find((n) => !n.hidden);
+    return normal ? i.linkColor !== normal.linkColor : true;
+  }) &&
+  // 未确认前不可跳转：整条链接地址被摘掉
+  hiddenItems.every((i) => i.href === null) &&
+  // 摘要收起，让占位更简洁
+  hiddenItems.every((i) => !i.hasSnippet) &&
+  // 未命中的条目完全不受影响
+  hideState.filter((i) => !i.hidden).every((i) => i.href && i.tagText === null) &&
+  // 「改完立即生效」：改第一行后就应有隐藏项出现
+  switchedToHide.length === 2 &&
+  switchedToHide[0].hidden === 2;
+
+console.log(hideOk ? '  ✅ hide 正确' : '  ❌ hide 不符预期');
+
+/* ---------- 4. 单击隐藏项 → 恢复正常 ---------- */
+
+const hiddenShot = process.argv.includes('--dark')
+  ? 'strip-filter-hidden-dark.png'
+  : 'strip-filter-hidden.png';
+await page.screenshot({ path: join(root, '.build', hiddenShot), fullPage: true });
+
+/*
+ * 单击第一条隐藏项。
+ *
+ * 用真实鼠标坐标点击（而不是 dispatchEvent）：
+ * 「用户单击」是需求里的原话，必须验证合成鼠标能真正落到占位条上 ——
+ * 这同时验证了占位条没有被别的元素挡住。
+ */
+const firstHiddenBox = await page.locator('.se-item-hidden').first().boundingBox();
+const hiddenNumBefore = hiddenItems[0]?.num;
+const hiddenTitleBefore = hiddenItems[0]?.title;
+await page.mouse.click(firstHiddenBox.x + firstHiddenBox.width / 2, firstHiddenBox.y + 20);
+await page.waitForTimeout(250);
+
+const afterReveal = await inspectItems();
+const revealed = afterReveal.find((i) => i.num === hiddenNumBefore);
+
+console.log('=== 结果过滤：单击解除隐藏 ===');
+console.log(
+  `  原隐藏项 序号「${hiddenNumBefore}」 「${hiddenTitleBefore?.slice(0, 26)}」` +
+    ` → hidden=${revealed?.hidden} 标签=${revealed?.tagText ?? '(无)'}` +
+    ` href=${revealed?.href ? '有' : '无'} 摘要=${revealed?.hasSnippet}`,
+);
+console.log(`  剩余隐藏条目：${afterReveal.filter((i) => i.hidden).length}`);
+
+const revealOk =
+  !!revealed &&
+  revealed.hidden === false &&
+  revealed.tagText === null &&
+  typeof revealed.href === 'string' &&
+  revealed.href.startsWith('http') &&
+  revealed.hasSnippet === true &&
+  // 只解除了被点的那一条
+  afterReveal.filter((i) => i.hidden).length === hiddenItems.length - 1;
+
+console.log(revealOk ? '  ✅ 单击恢复正常' : '  ❌ 单击恢复正常不符预期');
+
+/* ---------- 5. 恢复后与普通条目逐字段一致 ---------- */
+
+/*
+ * 用户原话：「被用户激活正常显示后与其他搜索项无任何区别」。
+ * 因此不能只看「看起来正常」，要拿一个从未被隐藏的条目作对照，
+ * 逐字段比较结构差异。
+ *
+ * 先把鼠标移开：上一步的点击让指针停在刚恢复的条目上，
+ * 标题正处于悬停态（着色 + 下划线），与未悬停的对照样本比较必然「有差异」。
+ * 那是光标位置造成的，不是条目本身的差别。
+ */
+await page.mouse.move(5, 5);
+await page.waitForTimeout(200);
+const parity = await page.evaluate((revealedNum) => {
+  const pick = (li) => {
+    const link = li.querySelector('.se-link');
+    const hit = li.querySelector('.se-hit');
+    const cs = getComputedStyle(link);
+    return {
+      classes: [...li.classList].sort().join(' '),
+      hasTag: !!li.querySelector('.se-tag'),
+      hasSnippet: !!li.querySelector('.se-snippet'),
+      linkColor: cs.color,
+      linkDecoration: cs.textDecorationLine,
+      linkUserSelect: cs.userSelect,
+      hitHref: hit?.getAttribute('href') ? 'yes' : null,
+      hitTarget: hit?.getAttribute('target') ?? null,
+      hitRel: hit?.getAttribute('rel') ?? null,
+      hitAriaHidden: hit?.getAttribute('aria-hidden') ?? null,
+      hitTabIndex: hit?.getAttribute('tabindex') ?? null,
+    };
+  };
+  const items = [...document.querySelectorAll('.se-item')];
+  // 被解除隐藏的那条：按序号定位（序号是稳定的，且正是本功能的保留项）
+  const revived = items.find(
+    (li) => (li.querySelector('.se-num')?.textContent ?? '').trim() === revealedNum,
+  );
+  if (!revived) return { ok: false, reason: '未按序号找到刚恢复的条目' };
+  if (revived.classList.contains('se-item-hidden')) {
+    return { ok: false, reason: '目标条目仍处于隐藏态' };
+  }
+  /*
+   * 对照样本：一条从未命中过规则的条目。
+   * 末条最稳妥 —— 样例里靠后的结果都不属于 csdn / zhihu。
+   */
+  const never = items[items.length - 1];
+  if (never === revived) {
+    // 万一刚恢复的正好是末条，改用首条从未命中的
+    const alt = items.find((li) => !li.classList.contains('se-item-hidden') && !li.querySelector('.se-tag') && li !== revived);
+    return alt ? { ok: true, revived: pick(revived), control: pick(alt) } : { ok: false, reason: '无可用对照样本' };
+  }
+  return { ok: true, revived: pick(revived), control: pick(never) };
+}, hiddenNumBefore);
+
+console.log('=== 结果过滤：恢复后与普通条目一致性 ===');
+if (parity.ok) {
+  for (const k of Object.keys(parity.revived)) {
+    const a = parity.revived[k];
+    const b = parity.control[k];
+    console.log(`     ${a === b ? '一致' : '差异'} ${k}: ${JSON.stringify(a)} vs ${JSON.stringify(b)}`);
+  }
+} else {
+  console.log(`     无法取到对照样本：${parity.reason ?? '(未知)'}`);
+}
+
+const parityOk =
+  parity.ok &&
+  parity.revived.classes === parity.control.classes &&
+  parity.revived.hasTag === false &&
+  parity.revived.hasSnippet === parity.control.hasSnippet &&
+  parity.revived.linkColor === parity.control.linkColor &&
+  parity.revived.linkDecoration === parity.control.linkDecoration &&
+  parity.revived.hitHref === parity.control.hitHref &&
+  parity.revived.hitTarget === parity.control.hitTarget &&
+  parity.revived.hitRel === parity.control.hitRel &&
+  parity.revived.hitAriaHidden === parity.control.hitAriaHidden &&
+  parity.revived.hitTabIndex === parity.control.hitTabIndex;
+
+console.log(parityOk ? '  ✅ 与普通条目完全一致' : '  ❌ 与普通条目仍有差异');
+
+/* ---------- 6. 规则跨刷新持久化 ---------- */
+
+/*
+ * 过滤配置存 localStorage（用户级偏好），换页 / 刷新都应留着。
+ * 这里直接重载页面 —— 而重写每次都会重建列表，
+ * 因此同时验证了「规则在首次重写时就生效」，而不是等用户再进一次设置。
+ */
+const persistedBefore = await page.evaluate(() =>
+  localStorage.getItem('search-enhance:filter-rules'),
+);
+await page.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+await page.evaluate((src) => {
+  globalThis.__SE_FORCE_ENGINE__ = 'bing';
+  new Function(src)();
+}, code);
+await page.waitForTimeout(1500);
+
+const afterReload = await page.evaluate(() => ({
+  stored: localStorage.getItem('search-enhance:filter-rules'),
+  hidden: document.querySelectorAll('.se-item-hidden').length,
+  tagged: document.querySelectorAll('.se-tag-hidden').length,
+  total: document.querySelectorAll('.se-item').length,
+}));
+
+console.log('=== 结果过滤：跨刷新持久化 ===');
+console.log(`  刷新前存储：${persistedBefore}`);
+console.log(`  刷新后存储：${afterReload.stored}`);
+console.log(
+  `  重写后即生效：隐藏 ${afterReload.hidden} 条 / 共 ${afterReload.total} 条` +
+    `，灰字标记 ${afterReload.tagged} 个`,
+);
+const persistOk =
+  // 存储内容原样保留（含未改动的行为），说明写的是持久层而非会话层
+  persistedBefore === afterReload.stored &&
+  persistedBefore !== null &&
+  // 规则在「首次重写时」就生效，无需用户再进一次设置
+  afterReload.hidden === 5 &&
+  afterReload.hidden === afterReload.tagged &&
+  afterReload.hidden < afterReload.total;
+
+console.log(persistOk ? '  ✅ 持久化正确' : '  ❌ 持久化不符预期');
+
+// 清掉规则，避免污染后续段落
+await clearRulesDirect();
+
+const filterOk = panelOk && badgeOk && hideOk && revealOk && parityOk && persistOk;
+console.log(filterOk ? '✅ 结果过滤整体通过' : '❌ 结果过滤存在失败项');
+
+/* ==========================================================================
    已登录分支专项验证
    --------------------------------------------------------------------------
    上面跑的是样例快照，它处于**未登录**状态，只能覆盖「点击登录 Bing」。
@@ -908,24 +1415,37 @@ await page.evaluate((src) => {
 await page.waitForTimeout(1500);
 
 const signedInEntry = await page.evaluate(() => {
-  const link = document.querySelector('#se-menu-popup .se-menu-link');
-  return link
-    ? { label: link.textContent.trim(), href: link.getAttribute('href') }
-    : null;
+  /*
+   * 取账户那条 —— 它是 <a>，而首条「结果过滤设置」是 <button>。
+   * 早期版本用 '.se-menu-link' 取首个匹配，加了过滤入口后
+   * 拿到的变成了那个按钮（label「结果过滤设置」、无 href），断言随之失败。
+   */
+  const link = document.querySelector('#se-menu-popup a.se-menu-link');
+  const first = document.querySelector('#se-menu-popup .se-menu-link');
+  return {
+    label: link ? link.textContent.trim() : null,
+    href: link?.getAttribute('href') ?? null,
+    // 顺带确认过滤入口仍在首位且未串位
+    firstTag: first?.tagName ?? null,
+    firstLabel: first ? first.textContent.trim() : null,
+  };
 });
 
 console.log('=== 已登录分支 ===');
 console.log(`  构造顶栏：${signedInShape}`);
-console.log(`  账户入口：${signedInEntry?.label ?? '(缺失)'} → ${signedInEntry?.href ?? ''}`);
+console.log(`  菜单首项：[${signedInEntry.firstTag}] ${signedInEntry.firstLabel}`);
+console.log(`  账户入口：${signedInEntry.label ?? '(缺失)'} → ${signedInEntry.href ?? ''}`);
 
 const signedInOk =
   signedInShape === 'ok' &&
-  signedInEntry !== null &&
+  signedInEntry.firstTag === 'BUTTON' &&
+  signedInEntry.firstLabel === '结果过滤设置' &&
+  signedInEntry.label !== null &&
   /^已作为 .+ 登录$/.test(signedInEntry.label) &&
-  signedInEntry.href.startsWith('https://account.microsoft.com');
+  (signedInEntry.href ?? '').startsWith('https://account.microsoft.com');
 
 console.log(signedInOk ? '  ✅ 已登录分支正确' : '  ❌ 已登录分支不符预期');
 
 await browser.close();
 server.close();
-process.exit(pass && pagerOk && signedInOk ? 0 : 1);
+process.exit(pass && pagerOk && filterOk && signedInOk ? 0 : 1);

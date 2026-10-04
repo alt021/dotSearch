@@ -422,6 +422,11 @@ body.se-stripped {
   .se-title {
     font-size: 1.125rem;
   }
+
+  /* 标签与标题同比例收缩，保持两者的视觉比例关系不变 */
+  .se-tag {
+    font-size: 0.8125rem;
+  }
 }
 
 /* ==========================================================================
@@ -517,6 +522,13 @@ body.se-stripped {
   color: inherit;
   text-decoration: none;
   border-bottom: 1px solid var(--se-line);
+  /* 「结果过滤设置」是 <button>，需显式清掉浏览器默认外观 */
+  text-align: left;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  cursor: pointer;
 }
 
 .se-menu-link:last-child {
@@ -568,4 +580,287 @@ body.se-stripped {
 .se-menu-link:focus-visible {
   outline: 2px solid var(--se-accent);
   outline-offset: 2px;
+}
+
+/* ==========================================================================
+   结果过滤
+   --------------------------------------------------------------------------
+   两种作用（由设置面板选择）：
+     badge  标题前加「已排除」小标签，结果照常显示
+     hide   整条降级为占位：序号保留、内容灰字、可单击展开
+
+   隐藏刻意不删除条目 —— 序号是第一栏的纵向韵律，
+   抽掉一条会让后面的编号整体前移，用户失去「这里原本有条结果」的线索。
+   ========================================================================== */
+
+/* ---- 标题前的标记 ---- */
+
+/*
+ * 标签刻意**不**用等宽字体栈。
+ *
+ * 等宽栈里的 Consolas 在 Windows 上没有中文字形，
+ * 浏览器会为「已排除」这类汉字回退到默认衬线体（SimSun）——
+ * 结果就是标签里的中文是衬线、标题是无衬线，两种字面拼在一起很别扭。
+ * 因此直接继承正文的无衬线栈，与标题同源。
+ */
+.se-tag {
+  display: inline-block;
+  margin-right: 0.5rem;
+  padding: 0.1rem 0.4rem;
+  font-family: inherit;
+  /*
+   * 基准字号从 11px 提到 14px。
+   * 原来比标题（1.25rem = 20px）小太多，视觉上像另一个层级的注脚；
+   * 作为标题的前缀标记，它应当读起来是标题的一部分。
+   */
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  vertical-align: 0.06em;
+  white-space: nowrap;
+}
+
+/* 「已排除」：用强调色描边，是提示而非错误 */
+.se-tag-excluded {
+  color: var(--se-accent);
+  border: 1px solid var(--se-accent);
+}
+
+/* ---- 隐藏态的占位条目 ---- */
+
+/*
+ * .se-tag-hidden 是隐藏条目**唯一**的内容：
+ * 它占的是链接那一行的位置，不是标题前的标签。
+ * 因此这里把它从 .se-tag 的「行内小标记」语境里拉出来，
+ * 复位为一块独立的块级文字（字号也按正文行来，不是标签的尺寸）。
+ */
+.se-tag-hidden {
+  display: block;
+  margin: 0;
+  padding: 0;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  vertical-align: baseline;
+  color: var(--se-muted);
+}
+
+/*
+ * 隐藏时不保留标题与摘要：body 栏里只剩上面那行占位文字，
+ * 位置就是正常条目的链接所在处（见 hideItemBody 的注）。
+ *
+ * 因此这里不再有 .se-cite / .se-title / .se-link 的降级规则 ——
+ * 那些节点已被移出文档，只在恢复时才放回。
+ */
+
+/*
+ * 悬停整条时占位文字转为前景色，让「可点」这件事在占位条上同样成立。
+ */
+.se-item-hidden {
+  cursor: pointer;
+}
+
+.se-item-hidden:hover .se-tag-hidden {
+  color: var(--se-fg);
+}
+
+/*
+ * 刻意**不**给占位条任何焦点样式。
+ *
+ * 点击是为了展开，不是聚焦；冒出一个红框会让「点一下就恢复」
+ * 这个动作显得像出了错。相应的 focus-within 规则已移除，
+ * 并在 mousedown 阶段阻止了默认聚焦（见 bindHiddenToggle）。
+ */
+
+/* ---- 设置浮层 ---- */
+
+.se-filter-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483200;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 4rem 1rem;
+  overflow-y: auto;
+  /* 压暗背景，把注意力收拢到面板上 */
+  background: color-mix(in srgb, var(--se-fg) 45%, transparent);
+}
+
+.se-filter-panel {
+  width: 100%;
+  max-width: 34rem;
+  padding: 1.5rem;
+  background: var(--se-bg);
+  border: 1px solid var(--se-fg);
+}
+
+.se-filter-head {
+  display: flex;
+  /*
+   * 居中对齐而非基线对齐：关闭键是本轮改成的方形图标按钮，
+   * 没有文字基线可言；基线对齐会让它与标题错位。
+   */
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 3px solid var(--se-rule);
+}
+
+.se-filter-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+/*
+ * 关闭按钮：一个「×」字形按钮。
+ *
+ * 用固定方形盒 + 居中字形的做法，而不是给 <button> 直接写字 ——
+ * 文字按钮的可点区域会随字号浮动，方形盒则给出稳定、
+ * 足够大的命中区（32px，满足触屏最小可点尺寸）。
+ */
+.se-filter-close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--se-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.se-filter-close:hover {
+  color: var(--se-accent);
+}
+
+.se-filter-rows {
+  display: flex;
+  flex-direction: column;
+  /*
+   * 与页头之间留出间距。
+   * 这里原来靠一段简介文本的 margin 撑开，简介删掉后
+   * 改由 rows 自己承担，否则列表会贴着页头那条规则线。
+   */
+  margin-top: 1rem;
+  /*
+   * 已有规则与下方的新增行之间不画分隔线。
+   *
+   * 两者是同一张列表的「上一段」与「下一段」，中间加一条 3px 粗线
+   * 会把它们割成两个区块，读起来像两张表；
+   * 用留白区分层级就够，规则线留给真正需要分隔的地方。
+   */
+}
+
+/*
+ * 空态：居中一行「- EMPTY -」。
+ *
+ * 定高 + 居中，是为了让面板在有无规则时高度不跳变 ——
+ * 空的列表若只有一行文字紧贴页头，面板会显得没画完。
+ */
+.se-filter-empty {
+  margin: 0;
+  padding: 2.25rem 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-align: center;
+  color: var(--se-muted);
+}
+
+.se-filter-row {
+  display: grid;
+  grid-template-columns: 1fr 11rem auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.6rem 0;
+  /*
+   * 每行下边一条细线。
+   * 最后一行也不例外 —— 它与下方的新增行之间靠留白区隔，
+   * 但仍需要有线收住整列，否则已有规则看起来像没写完。
+   */
+  border-bottom: 1px solid var(--se-line);
+}
+
+/* 输入控件：瑞士风格不用圆角与阴影，只用细描边 */
+.se-filter-input,
+.se-filter-domain,
+.se-filter-select {
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--se-fg);
+  background: var(--se-bg);
+  border: 1px solid var(--se-line);
+  border-radius: 0;
+}
+
+.se-filter-input:focus,
+.se-filter-domain:focus,
+.se-filter-select:focus {
+  outline: 2px solid var(--se-accent);
+  outline-offset: -1px;
+}
+
+/* 输入不合法时给出可见反馈，而不是静默吞掉 */
+.se-filter-input-invalid {
+  border-color: var(--se-accent);
+}
+
+.se-filter-add {
+  display: grid;
+  grid-template-columns: 1fr 11rem auto;
+  gap: 0.5rem;
+  /*
+   * 与上方规则列表只靠留白区隔，不画线（见 .se-filter-rows 的注释）。
+   * 这里用两倍于行内间距的空白，让「新增」读起来是独立的一段动作，
+   * 又不至于像被切开成另一张表。
+   */
+  margin-top: 1.5rem;
+}
+
+.se-filter-add-btn,
+.se-filter-remove {
+  padding: 0.4rem 0.75rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--se-fg);
+  background: transparent;
+  border: 1px solid var(--se-fg);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.se-filter-add-btn:hover,
+.se-filter-remove:hover {
+  color: var(--se-bg);
+  background: var(--se-fg);
+}
+
+/* 窄屏：三种控件改为纵向堆叠，避免每格窄到不可用 */
+@media (max-width: 640px) {
+  .se-filter-row,
+  .se-filter-add {
+    grid-template-columns: 1fr;
+  }
+
+  .se-filter-row {
+    gap: 0.4rem;
+    padding: 0.9rem 0;
+  }
+
+  .se-filter-remove {
+    justify-self: start;
+  }
 }

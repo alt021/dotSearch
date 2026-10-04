@@ -19,14 +19,9 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { createRequire } from 'node:module';
+import { launchChromite } from './lib/browser.mjs';
 
-const require = createRequire(import.meta.url);
-const { chromium } = require(
-  'C:/Users/AmeXE2/.workbuddy/binaries/node/workspace/node_modules/playwright-core',
-);
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const CHROME = 'C:/Users/AmeXE2/Documents/Programs/Chromite/chrome.exe';
 
 mkdirSync(join(root, '.build'), { recursive: true });
 const html = readFileSync(join(root, '.build', 'bing-live.html'), 'utf8');
@@ -40,7 +35,7 @@ const server = createServer((_q, r) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const { port } = server.address();
 
-const browser = await chromium.launch({ executablePath: CHROME });
+const browser = await launchChromite();
 const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
 await page.goto(`http://127.0.0.1:${port}/bing.html?q=test`, { waitUntil: 'domcontentloaded' });
 
