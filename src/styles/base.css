@@ -80,6 +80,38 @@ body.se-stripped {
   max-width: 62rem;
   margin: 0 auto;
   padding: 3.5rem 2rem 6rem;
+  /*
+   * 抬高到几乎一切之上。
+   *
+   * 重写之后必应仍会往 body 里插自己的浮层 —— 实测最典型的是
+   * `div.overlay-dimmer`：position:fixed、z-index:9998、pointer-events:auto、
+   * 铺满整个视口。它平时靠 <b>必应自己样式表</b>里的 .b_hide 规则才 display:none，
+   * 而那份样式表已被我们禁用，于是它就成了一个全屏点击拦截层。
+   *
+   * 下面那条 display:none 规则是主要防线；这里再给根容器一个高 z-index，
+   * 即使还有别的浮层以嵌套形式冒出来，也压不到我们上面、抢不走命中测试。
+   * 数值比过滤浮层低一档，免得盖住浮层。
+   */
+  position: relative;
+  z-index: 2147483000;
+}
+
+/*
+ * 重建后 body 里只应有本脚本的内容。
+ *
+ * `#se-source` 例外：它是原站 DOM 的隐藏容器，另有自己的隐藏方式
+ * （见下方说明，刻意不用 display:none 以配合自动翻页脚本）。
+ * 过滤浮层同样例外，它本来就要铺满视口。
+ *
+ * 这条规则针对的是必应塞进 body 的「零件」：脚本、隐藏 input、
+ * 建议框容器、SSO iframe，以及各类浮层与遮罩。
+ * 它们的可见性原本由必应自己的 CSS 决定 —— 那份 CSS 被禁用后，
+ * 本该隐藏的元素会直接显形。overlay-dimmer 就是因此变成一个
+ * 全屏遮罩，把整页的点击都吃掉：**这是用户报的「点什么都没反应」的直接原因。**
+ * 所以这里必须显式中和，不能只靠禁用原站 CSS。
+ */
+body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
+  display: none !important;
 }
 
 /* ---- 原站内容的隐藏容器 ---- */

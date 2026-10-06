@@ -281,11 +281,42 @@ for (const c of CASES) {
         leakedStyle: document.querySelectorAll('.se-extra style, .se-extra link').length,
       };
     })(),
+    /*
+     * 命中测试覆盖：整页应当只有本脚本的内容能接收点击。
+     *
+     * 对应一个真实故障：重写把必应的样式表整体禁用后，
+     * 必应塞进 body 的那些「零件」（浮层、遮罩、建议框容器）
+     * 失去了原本约束它们的 CSS，可能以全屏遮罩的形态冒出来，
+     * 把整页的点击都吃掉 —— 用户看到的就是「点什么都没反应」。
+     *
+     * 做法：在视口上打网格，统计落点在哪。
+     * 落点只允许是本脚本内容，或 body/html（页面空白处的边距）。
+     * 出现任何别的元素都算被遮挡。
+     */
+    coverage: (() => {
+      const tally = { own: 0, blank: 0, foreign: [] };
+      for (let y = 6; y < innerHeight; y += 24) {
+        for (let x = 6; x < innerWidth; x += 24) {
+          const el = document.elementFromPoint(x, y);
+          if (!el) continue;
+          if (el.closest('#se-root')) tally.own++;
+          else if (el === document.body || el === document.documentElement) tally.blank++;
+          else {
+            const key = `${el.tagName}${el.id ? '#' + el.id : ''}`;
+            if (!tally.foreign.includes(key)) tally.foreign.push(key);
+          }
+        }
+      }
+      return tally;
+    })(),
   }));
 
   // 相关搜索不应出现在重写后的页面里
   const extraClean =
     !out.extra.hasRelatedSearch && out.extra.leftoverRs === 0 && out.extra.leakedStyle === 0;
+
+  // 没有任何原站元素挡在页面上（否则点击会被它吃掉）
+  const uncovered = out.coverage.foreign.length === 0;
 
   // 页头菜单：按钮与标题同行、收起时不显示、入口完整
   const menuOk =
@@ -314,9 +345,15 @@ for (const c of CASES) {
    * 光断言菜单入口存在还不够 —— 必须实际走一遍
    * 「展开菜单 → 点过滤入口 → 面板出现」，把整条链路测穿。
    *
-   * 用程序化点击而非合成鼠标：菜单按钮的祖先在本环境会被
-   * Playwright 误判为遮挡（见 verify-strip 里的同一说明），
-   * 而这里要验的是功能链路，不是输入层。
+   * 这里用**程序化点击**（dispatchEvent / element.click）而不是合成鼠标。
+   *
+   * 原因：真实鼠标点击要求坐标精确落在元素上，而重写后的页面仍在被
+   * 必应的脚本持续改动（实测它会往 body 里插 overlay-dimmer 之类的节点），
+   * 测量与按下之间只要漂移几像素，小到 27x19 的菜单按钮就会点空 ——
+   * 这属于测试替身的脆弱，不是被测功能的问题，会干扰对真实故障的判断。
+   *
+   * 输入层（遮挡、命中测试、pointer-events）由下面的 `命中覆盖` 断言负责，
+   * 那条才是针对「整页点不动」的有效守护。
    */
   const panel = await page.evaluate(() => {
     const btn = document.querySelector('.se-menu-btn');
@@ -343,6 +380,7 @@ for (const c of CASES) {
   const ok =
     (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) &&
     extraClean &&
+    uncovered &&
     linkOk &&
     menuOk &&
     panelOk;
@@ -366,6 +404,10 @@ for (const c of CASES) {
   console.log(
     `     过滤面板: ${panel.step}` +
       (panel.step === 'opened' ? ` 可见=${panel.visible} 列表=${panel.hasRows}` : ''),
+  );
+  console.log(
+    `     命中覆盖: 本脚本 ${out.coverage.own} 点 / 空白 ${out.coverage.blank} 点` +
+      (uncovered ? '，无原站元素遮挡' : `，被遮挡：${out.coverage.foreign.join(', ')}`),
   );
   console.log(
     `     直答区: ${out.extra.count} 个` +

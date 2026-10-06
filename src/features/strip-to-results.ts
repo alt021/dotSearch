@@ -231,40 +231,10 @@ export const stripToResults: Feature = {
       document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
     ).filter((node) => pruneAnswerNode(node));
 
-    /*
-     * ---- 2. 把原站内容整体移入隐藏容器，而不是删除 ------------------------
-     *
-     * 早期版本直接 document.body.innerHTML = ''，这会让自动翻页脚本
-     * （东方永页机 / Pagetual）无法工作：它是自驱动的，靠分析当前页
-     * 找「下一页链接」与「主内容容器」，清空后这些锚点全没了。
-     *
-     * 现在改为整体搬进一个隐藏容器：
-     *   - 原 DOM 仍在文档中，Pagetual 的查询照常命中原有结构
-     *   - 它把新一页的结果插进来后，由 pagetual-bridge 采出来渲染进我们的列表
-     *   - 用户看到的仍是干净的重写页面（隐藏容器不可见、不可聚焦）
-     *
-     * 用 appendChild 搬移节点而非克隆：搬移会保留节点上的事件监听，
-     * 必应自己的脚本与 Pagetual 的对象引用都继续有效。
-     */
-    const source = clipOriginalContent();
-
-    document.body.className = 'se-stripped';
-    document.body.removeAttribute('style');
-    document.documentElement.removeAttribute('style');
-    document.documentElement.className = 'se-root-html';
-
-    /*
-     * 原站 DOM 已搬走，但它的样式表还挂在 <head> 上、继续全局生效。
-     * 必须在重建之前关掉，否则我们新写的元素会被原站规则挑中
-     * （见 disableForeignStylesheets 的说明）。
-     *
-     * 清理是按 id 排除自家样式表的，而 GM_addStyle 注入的那份没有 id，
-     * 会被一并关掉 —— 所以紧接着把我们的样式补回来。
-     */
-    disableForeignStylesheets();
-    reassertOwnStyle();
-
-    // ---- 3. 重建结构 -------------------------------------------------------
+    // ---- 2. 先把新页面整个建好（纯内存操作，尚未触碰原站页面）--------------
+    //
+    // 顺序上刻意「先构建、后提交」（提交段见下方 4.）：
+    // 构建要拼几十个节点，任何一步抛错都不该把用户页面弄残。
     const root = document.createElement('div');
     root.id = ROOT_ID;
     root.dataset.query = query;
@@ -310,6 +280,47 @@ export const stripToResults: Feature = {
     }
 
     root.appendChild(main);
+
+    // ---- 4. 提交：构建已完成，此刻才动原站页面 -----------------------------
+    //
+    // 这一段全是「破坏性」操作，集中放在最后：
+    //   搬走原站 DOM → 关掉它的样式表 → 换上我们的根容器。
+    //
+    // 为什么强调顺序 —— 失败后果完全不同：
+    //   构建期抛错   → 页面原样可用（用户只是没看到增强，仍能正常搜索）
+    //   提交之后抛错 → 原站 DOM 已搬走、样式已禁用，页面变成残废：
+    //                  无样式、点不动，比「没增强」糟糕得多。
+    // 早前版本在构建之前就禁用原站样式表，后续构建一旦出错就会留下
+    // 那种残废状态 —— 这是实际踩过的坑，不是假设。
+    //
+    // 搬移而不是删除，是为自动翻页脚本（东方永页机 / Pagetual）：
+    // 它是自驱动的，靠分析当前页找「下一页链接」与「主内容容器」，
+    // 早期版本直接 body.innerHTML = '' 会让它彻底失去锚点。
+    // 改为搬进隐藏容器后：
+    //   - 原 DOM 仍在文档中，Pagetual 的查询照常命中原有结构
+    //   - 它把新一页的结果插进来后，由 pagetual-bridge 采出来渲染进我们的列表
+    //   - 用户看到的仍是干净的重写页面（隐藏容器不可见、不可聚焦）
+    // 用 appendChild 搬移而非克隆：保留节点上的事件监听，
+    // 必应自己的脚本与 Pagetual 的对象引用都继续有效。
+    const source = clipOriginalContent();
+
+    document.body.className = 'se-stripped';
+    document.body.removeAttribute('style');
+    document.documentElement.removeAttribute('style');
+    document.documentElement.className = 'se-root-html';
+
+    /*
+     * 原站 DOM 已搬走，但它的样式表还挂在 <head> 上、继续全局生效，
+     * 会用它自己的通用选择器盖掉我们新写的元素（实测面板里的输入框
+     * 被染成 #444 文字配 #ddd 边框）。故整体禁用 ——
+     * CSS 的生效范围与 DOM 位置无关，搬进 #se-source 也不管用。
+     *
+     * 清理是按 id 排除自家样式表的，而 GM_addStyle 注入的那份没有 id，
+     * 会被一并关掉，所以紧接着把我们的样式补回来。
+     */
+    disableForeignStylesheets();
+    reassertOwnStyle();
+
     document.body.appendChild(root);
 
     // 隐藏结果的「单击展开」用事件委托，无需给每个条目单独绑定
@@ -1113,12 +1124,25 @@ function disableForeignStylesheets(): void {
    *
    * 只在新增节点里找，不做全量重扫 —— 这个观察器挂在 document 上、
    * 结果列表每次追加都会触发，全量重扫会白白拖慢页面。
+   *
+   * 属性也要看：实测有少数 <link> 是**先插入、后设置 rel**
+   * （创建时不带 rel，插入后才赋成 stylesheet），
+   * 只看 childList 会漏掉它们 —— 那 4 个漏网的样式表就是这么来的。
    */
   if (document.documentElement.hasAttribute('data-se-style-guard')) return;
   document.documentElement.setAttribute('data-se-style-guard', '1');
 
   const observer = new MutationObserver((records) => {
     for (const record of records) {
+      // 属性变化：目标是 <link> 时重新判定一次
+      if (record.type === 'attributes') {
+        const el = record.target;
+        if (el instanceof HTMLElement && !(el as HTMLLinkElement).disabled && isForeignStylesheet(el)) {
+          (el as HTMLLinkElement).disabled = true;
+        }
+        continue;
+      }
+
       for (const node of Array.from(record.addedNodes)) {
         if (isForeignStylesheet(node)) {
           (node as HTMLLinkElement | HTMLStyleElement).disabled = true;
@@ -1135,11 +1159,16 @@ function disableForeignStylesheets(): void {
       }
     }
   });
-  observer.observe(document, { childList: true, subtree: true });
+  observer.observe(document, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['rel', 'href'],
+  });
 }
 
-/**
- * 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */const COMPLIANCE_PATTERN =
+/** 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
+const COMPLIANCE_PATTERN =
   /隐私|条款|条款|协议|备案|许可|版权|法律|声明|政策|服务条款|隐私政策|隐私声明|京 ICP|沪 ICP|粤 ICP|ICP 备|公网安备|copyright|privacy|terms|legal|cookie/i;
 
 /**
