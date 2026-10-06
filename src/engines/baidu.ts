@@ -51,4 +51,8 @@ export const baidu: EngineAdapter = {
   markInjected() {
     /* TODO：接入时补上文档级标记 */
   },
+
+  unmarkInjected() {
+    /* TODO：与 markInjected 一同补上 */
+  },
 };

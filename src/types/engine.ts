@@ -61,4 +61,12 @@ export interface EngineAdapter {
   /** 该文档中是否已注入过本脚本（防止 SPA 重复注入） */
   isAlreadyInjected(doc: Document): boolean;
   markInjected(doc: Document): void;
+  /**
+   * 撤销注入标记。
+   *
+   * 启动过程若中途失败，必须把标记清掉 —— 否则这个文档会被永久
+   * 判定为「已注入」，后续任何重试（S 换词、验证脚本重注入）都被挡在门外，
+   * 表现为「整个增强功能一直不生效且没有任何补救机会」。
+   */
+  unmarkInjected(doc: Document): void;
 }

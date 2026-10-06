@@ -39,31 +39,46 @@ export class Runner {
     }
     engine.markInjected(document);
 
-    this.engine = engine;
-    injectStyle(css);
-    this.cssInjected = true;
+    /*
+     * 启动全程用 try 包住，失败时**撤销注入标记**。
+     *
+     * 标记的作用是防 SPA 重复注入，但它一旦置位就再没有补救机会：
+     * 启动若因任何原因中断，这个文档会被永久判定为「已注入」，
+     * 后续重试（换词、验证脚本重注入）全部被挡回，
+     * 用户看到的是「脚本完全没反应」而控制台只有一条启动报错。
+     * 清掉标记后，至少下一次触发还能再试一遍。
+     */
+    try {
+      this.engine = engine;
+      injectStyle(css);
+      this.cssInjected = true;
 
-    const forced = Boolean(forceEngine);
+      const forced = Boolean(forceEngine);
 
-    this.disposers.push(
-      onUrlChange((url) => {
-        // 强制模式下引擎固定，不响应 URL 变化
-        if (forced) return;
-        const next = detectEngine(url);
-        if (!next) return;
-        if (next === this.engine) {
-          void this.runAll(url);
-        } else {
-          log.info(`切换引擎：${this.engine?.name ?? '-'} → ${next.name}`);
-          this.teardownFeatures();
-          this.engine = next;
-          void this.runAll(url);
-        }
-      }),
-    );
+      this.disposers.push(
+        onUrlChange((url) => {
+          // 强制模式下引擎固定，不响应 URL 变化
+          if (forced) return;
+          const next = detectEngine(url);
+          if (!next) return;
+          if (next === this.engine) {
+            void this.runAll(url);
+          } else {
+            log.info(`切换引擎：${this.engine?.name ?? '-'} → ${next.name}`);
+            this.teardownFeatures();
+            this.engine = next;
+            void this.runAll(url);
+          }
+        }),
+      );
 
-    await this.runAll(new URL(location.href), forced);
-    log.info(`${engine.name} 增强已启用，共 ${this.active.size} 个功能。`);
+      await this.runAll(new URL(location.href), forced);
+      log.info(`${engine.name} 增强已启用，共 ${this.active.size} 个功能。`);
+    } catch (err) {
+      engine.unmarkInjected(document);
+      this.engine = null;
+      throw err;
+    }
   }
 
   /** 跑一轮所有功能（首次加载与换词后共用） */

@@ -72,6 +72,10 @@ export const bing: EngineAdapter = {
   markInjected(doc) {
     (doc as unknown as Record<string, unknown>)[INJECT_FLAG] = true;
   },
+
+  unmarkInjected(doc) {
+    delete (doc as unknown as Record<string, unknown>)[INJECT_FLAG];
+  },
 };
 
 /**

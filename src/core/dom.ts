@@ -22,7 +22,17 @@ export function waitForSelector<T extends Element = HTMLElement>(
       const el = root.querySelector<T>(selector);
       if (el) finish(el);
     });
-    observer.observe(root === document ? document.documentElement : root, {
+    /*
+     * 观察 document 本身，而不是 document.documentElement。
+     *
+     * `@run-at document-start` 下脚本会早于文档树执行，
+     * 此刻 documentElement / head / body 全是 null ——
+     * 早期版本传给 observe 的是 documentElement，
+     * 于是抛 `parameter 1 is not of type 'Node'`，整个启动流程中断。
+     * document 在任何时刻都是合法的 Node，观察它并开 subtree
+     * 同样能捕获到根元素与结果容器的出现。
+     */
+    observer.observe(root === document ? document : root, {
       childList: true,
       subtree: true,
     });

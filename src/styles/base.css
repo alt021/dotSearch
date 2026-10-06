@@ -32,6 +32,22 @@ body.se-stripped {
   --se-muted: #767676;
   --se-snippet: #333;
   --se-placeholder: #a8a8a8;
+  /*
+   * 浮层遮罩。
+   *
+   * 刻意**不**用 --se-fg 混色：那个变量在深色下是接近白的 #f2f2f2，
+   * 混出来是一层浅色，打在深色页面上等于把背景「提亮」——
+   * 与遮罩应有的「压暗、把注意力收拢到面板上」正好相反。
+   * 遮罩的颜色与主题无关，永远是压暗。
+   */
+  --se-scrim: rgba(0, 0, 0, 0.45);
+  /*
+   * 声明配色方案，让**原生控件**（<select> 的下拉列表、滚动条、
+   * 输入框内部的自动填充底色）跟随我们这套调色板。
+   * 不声明的话浏览器按浅色渲染这些由 UA 绘制的部分，
+   * 在深色页面里就会冒出一块白底 —— 下拉框尤其明显。
+   */
+  color-scheme: light;
 }
 
 /* 跟随系统深色偏好。深色下仍保持瑞士风格的高对比与纯色强调。 */
@@ -43,7 +59,15 @@ body.se-stripped {
     --se-line: #2e2e2e;
     --se-muted: #9a9a9a;
     --se-snippet: #d4d4d4;
-    --se-placeholder: #6a6a6a;
+    /*
+     * 占位文字比浅色下的 #a8a8a8 略暗，但比原来的 #6a6a6a 亮：
+     * 深色底上 #6a6a6a 的对比度偏低，几乎看不出写了什么；
+     * 同时它仍明显暗于正文 #f2f2f2，能一眼区分「占位」与「已填内容」。
+     */
+    --se-placeholder: #8a8a8a;
+    /* 深色页面本身已经很暗，遮罩加重一点才看得出层次 */
+    --se-scrim: rgba(0, 0, 0, 0.62);
+    color-scheme: dark;
   }
 
   /* 深色下红色略提亮以保证对比度 */
@@ -685,8 +709,8 @@ body.se-stripped {
   justify-content: center;
   padding: 4rem 1rem;
   overflow-y: auto;
-  /* 压暗背景，把注意力收拢到面板上 */
-  background: color-mix(in srgb, var(--se-fg) 45%, transparent);
+  /* 压暗背景，把注意力收拢到面板上（颜色与主题无关，见 --se-scrim） */
+  background: var(--se-scrim);
 }
 
 .se-filter-panel {
@@ -792,10 +816,20 @@ body.se-stripped {
   border-bottom: 1px solid var(--se-line);
 }
 
-/* 输入控件：瑞士风格不用圆角与阴影，只用细描边 */
+/*
+ * 输入控件：瑞士风格不用圆角与阴影，只用细描边。
+ *
+ * 注意 `.se-filter-action` 也在列表里。
+ *
+ * 面板里有两类下拉框：新增行用 `.se-filter-select`，
+ * 已有规则行用 `.se-filter-action`（见 filter-panel.ts 的 buildRow）。
+ * 早期版本只写了前者，于是已有规则的下拉框完全没有自定义样式 ——
+ * 暗色模式下表现为一块原生白底、字体还是 Arial。
+ */
 .se-filter-input,
 .se-filter-domain,
-.se-filter-select {
+.se-filter-select,
+.se-filter-action {
   min-width: 0;
   padding: 0.4rem 0.5rem;
   font: inherit;
@@ -806,9 +840,26 @@ body.se-stripped {
   border-radius: 0;
 }
 
+/*
+ * 占位文字显式着色。
+ * 不写就只能吃 UA 默认（深浅两种主题下都不是我们调过的灰），
+ * 暗色下尤其偏暗、几乎看不清。
+ */
+.se-filter-input::placeholder,
+.se-filter-domain::placeholder {
+  color: var(--se-placeholder);
+  opacity: 1;
+}
+
+/*
+ * 焦点态给红色描边。
+ * 用 outline 而非 border-color：描边不参与布局，
+ * 聚焦时控件不会因边框变粗而跳动。
+ */
 .se-filter-input:focus,
 .se-filter-domain:focus,
-.se-filter-select:focus {
+.se-filter-select:focus,
+.se-filter-action:focus {
   outline: 2px solid var(--se-accent);
   outline-offset: -1px;
 }

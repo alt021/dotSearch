@@ -931,18 +931,36 @@ const inspectItems = () =>
       const hit = li.querySelector('.se-hit');
       const tag = li.querySelector('.se-tag');
       const snippet = li.querySelector('.se-snippet');
+      const body = li.querySelector('.se-body');
       return {
         num: (li.querySelector('.se-num')?.textContent ?? '').trim(),
         hidden: li.classList.contains('se-item-hidden'),
         tagText: tag ? tag.textContent.trim() : null,
         tagClass: tag ? tag.className : null,
-        // 标签必须排在标题之前（用户原话「标题前」）
-        tagBeforeTitle: !!(tag && link && tag.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING),
+        // 标签必须排在标题之前（用户原话「标题前」）。
+        // 隐藏态没有标题，此时该字段无意义 —— 隐藏态的判据走 bodyChildren。
+        tagBeforeTitle: !!(
+          tag &&
+          link &&
+          tag.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING
+        ),
         title: (link?.textContent ?? '').trim(),
         href: hit?.getAttribute('href') ?? null,
+        hasLink: !!link,
+        hasCite: !!li.querySelector('.se-cite'),
         hasSnippet: !!snippet,
-        // 隐藏项标题应呈灰字：取实际计算色，避免只看 class 的假阳性
+        /*
+         * body 栏的直接子元素类名。
+         *
+         * 隐藏态的契约是「body 里只剩一个占位」——标题、来源、摘要全部搬走，
+         * 因此只能靠这个字段断言，不能再去找 .se-link（它已不在文档里）。
+         */
+        bodyChildren: body
+          ? [...body.children].map((c) => c.className)
+          : [],
+        // 标题/占位文字的实际计算色，用于确认灰字而不是只看 class
         linkColor: link ? getComputedStyle(link).color : null,
+        tagColor: tag ? getComputedStyle(tag).color : null,
         citeColor: li.querySelector('.se-cite')
           ? getComputedStyle(li.querySelector('.se-cite')).color
           : null,
@@ -1024,7 +1042,12 @@ const invalidRejected = await page.evaluate(() => {
   };
 });
 
-// 重复添加同域名应「改动作」而非堆两条
+/*
+ * 重复添加同域名应「改动作」而非堆两条。
+ *
+ * 这里故意再写一次三段域名 blog.csdn.net ——
+ * 规范化会把它收敛成 csdn.net，与已有规则视为同一条。
+ */
 const deduped = await page.evaluate(() => {
   const input = document.querySelector('.se-filter-add .se-filter-input');
   const select = document.querySelector('.se-filter-add .se-filter-select');
@@ -1038,8 +1061,9 @@ const deduped = await page.evaluate(() => {
 // 改 selects 的 action：把 csdn 从 hide 改成 badge
 const toggled = await page.evaluate(() => {
   const rows = [...document.querySelectorAll('.se-filter-row')];
+  // 行里显示的是**规范化后**的域名，所以按 csdn.net 找，不是 blog.csdn.net
   const target = rows.find(
-    (r) => r.querySelector('.se-filter-domain')?.value === 'blog.csdn.net',
+    (r) => r.querySelector('.se-filter-domain')?.value === 'csdn.net',
   );
   const select = target?.querySelector('.se-filter-action');
   if (!select) return null;
@@ -1063,16 +1087,16 @@ const panelOk =
   panelOpened &&
   added.ok &&
   added.rows === 2 &&
-  // 完整网址被规范化成纯域名
-  added.stored.some((r) => r.domain === 'blog.csdn.net' && r.action === 'hide') &&
+  // 完整网址按站点归并：blog.csdn.net 收敛为 csdn.net
+  added.stored.some((r) => r.domain === 'csdn.net' && r.action === 'hide') &&
   added.stored.some((r) => r.domain === 'zhihu.com' && r.action === 'badge') &&
   invalidRejected.unchanged &&
   invalidRejected.marked &&
   // 去重后仍是两条，且动作被覆盖
   deduped.length === 2 &&
-  deduped.find((r) => r.domain === 'blog.csdn.net')?.action === 'hide' &&
+  deduped.find((r) => r.domain === 'csdn.net')?.action === 'hide' &&
   toggled !== null &&
-  toggled.find((r) => r.domain === 'blog.csdn.net')?.action === 'badge';
+  toggled.find((r) => r.domain === 'csdn.net')?.action === 'badge';
 
 /*
  * 面板保持打开 —— 下面 badge 段落要先断言，再在面板内把两条规则改成 hide。
@@ -1137,7 +1161,7 @@ const switchedToHide = await page.evaluate(() => {
    * 后续轮次的 change 派发到孤岛上，既不会写存储也不会重渲染。
    * 这是本验证脚本踩过的坑，不是实现的问题 —— 用 while 按域名重取。
    */
-  const domains = ['blog.csdn.net', 'zhihu.com'];
+  const domains = ['csdn.net', 'zhihu.com'];
   for (const domain of domains) {
     const row = [...document.querySelectorAll('.se-filter-row')].find(
       (r) => r.querySelector('.se-filter-domain')?.value === domain,
@@ -1167,8 +1191,8 @@ console.log('=== 结果过滤：hide（隐藏）===');
 console.log(`  隐藏条目：${hiddenItems.length} / ${hideState.length}`);
 for (const i of hiddenItems) {
   console.log(
-    `     序号「${i.num}」 标签「${i.tagText}」 href=${i.href} 摘要=${i.hasSnippet}` +
-      ` 标题色=${i.linkColor}`,
+    `     序号「${i.num}」 文字「${i.tagText}」 href=${i.href}` +
+      ` body 子元素=[${i.bodyChildren.join(', ')}]`,
   );
 }
 // 序号保留：把所有序号连起来看是否仍是连续 01..N（说明没有被删掉重排）
@@ -1189,24 +1213,31 @@ const hideOk =
   hiddenItems.length === 5 &&
   // 序号保留：整列序号仍是 01..N 连续，隐藏项没有被摘掉
   nums === expectNums &&
-  // 标题区灰字「该结果已隐藏」
+  /*
+   * 契约：隐藏项在**链接所在处**只显示一行灰字占位，
+   * 标题与描述都不显示。
+   * 因此 body 栏里应当只剩这一个子元素 —— 不是「标题变灰」那种残留，
+   * 而是真的不再有标题、来源、摘要三个节点。
+   */
   hiddenItems.every((i) => i.tagText === '该结果已隐藏') &&
   hiddenItems.every((i) => i.tagClass?.includes('se-tag-hidden')) &&
-  hiddenItems.every((i) => i.tagBeforeTitle) &&
-  // 仍是灰字：与正常条目的标题色不同（取未隐藏条目的色作对照）
+  hiddenItems.every(
+    (i) => i.bodyChildren.length === 1 && i.bodyChildren[0].includes('se-tag-hidden'),
+  ) &&
+  hiddenItems.every((i) => !i.hasLink && !i.hasCite && !i.hasSnippet) &&
+  // 占位文字是灰字：与正文标题色不同
   hiddenItems.every((i) => {
     const normal = hideState.find((n) => !n.hidden);
-    return normal ? i.linkColor !== normal.linkColor : true;
+    return normal ? i.tagColor !== normal.linkColor : true;
   }) &&
-  // 未确认前不可跳转：整条链接地址被摘掉
+  // 未展开前不可跳转：整条链接地址被摘掉
   hiddenItems.every((i) => i.href === null) &&
-  // 摘要收起，让占位更简洁
-  hiddenItems.every((i) => !i.hasSnippet) &&
   // 未命中的条目完全不受影响
   hideState.filter((i) => !i.hidden).every((i) => i.href && i.tagText === null) &&
-  // 「改完立即生效」：改第一行后就应有隐藏项出现
+  // 「改完立即生效」：改第一行后就应有隐藏项出现（csdn 那 2 条）
   switchedToHide.length === 2 &&
-  switchedToHide[0].hidden === 2;
+  switchedToHide[0].hidden === 2 &&
+  switchedToHide[1].hidden === 5;
 
 console.log(hideOk ? '  ✅ hide 正确' : '  ❌ hide 不符预期');
 
@@ -1378,7 +1409,138 @@ console.log(persistOk ? '  ✅ 持久化正确' : '  ❌ 持久化不符预期')
 // 清掉规则，避免污染后续段落
 await clearRulesDirect();
 
-const filterOk = panelOk && badgeOk && hideOk && revealOk && parityOk && persistOk;
+/* ---------- 7. 样式隔离与控件配色 ---------- */
+
+/*
+ * 针对一个真实故障补的回归断言：
+ *   面板在暗色模式下「大量配色错误」，且下拉框完全没有自定义样式。
+ *
+ * 两个独立成因，都要测住：
+ *   a. 原站样式表从未被禁用。重写只清了原站**内容**，
+ *      但 Bing 的 CSS 挂在 <head> 上继续全局生效，
+ *      把我们的控件染成了它自己的配色（输入框文字变 #444、边框 #ddd）。
+ *   b. 已有规则行的下拉框用 `.se-filter-action`，
+ *      而 CSS 只覆盖了 `.se-filter-select` —— 那个下拉框吃的是原生外观，
+ *      字体是 Arial、背景是 UA 的白。
+ *
+ * 配色断言不写死色值，而是与当前主题下的 CSS 变量比对 ——
+ * 这样浅色与深色两次运行（verify:strip / verify:strip --dark）都成立。
+ */
+const styleState = await page.evaluate(() => {
+  const css = (name) =>
+    getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  // 把 #rrggbb 转成浏览器的 rgb() 形式，便于与 computed 值直接比对
+  const toRgb = (hex) => {
+    const h = hex.replace('#', '');
+    const n = parseInt(h.length === 3 ? h.replace(/./g, (c) => c + c) : h, 16);
+    return `rgb(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255})`;
+  };
+  const vars = {
+    bg: toRgb(css('--se-bg')),
+    fg: toRgb(css('--se-fg')),
+    line: toRgb(css('--se-line')),
+  };
+
+  /*
+   * 先塞一条规则再开面板：`已有规则行` 的下拉框是本次要测的重点之一，
+   * 而它只在有规则时才存在（空列表渲染的是「- EMPTY -」占位）。
+   * 面板在渲染时读存储，所以必须在点击打开之前写入。
+   */
+  localStorage.setItem(
+    'search-enhance:filter-rules',
+    JSON.stringify([{ domain: 'example.com', action: 'badge' }]),
+  );
+  document.querySelector('.se-menu-btn')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  document.querySelector('#se-menu-popup .se-menu-filter')?.click();
+
+  const pick = (sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor, font: cs.fontFamily, scheme: cs.colorScheme };
+  };
+
+  // 统计仍然启用的原站样式表
+  let enabledForeign = 0;
+  let totalForeign = 0;
+  for (const el of document.querySelectorAll('link[rel="stylesheet"], style')) {
+    if (el.id === 'search-enhance-styles' || el.id === 'se-rewrite-style') continue;
+    totalForeign++;
+    if (!el.disabled) enabledForeign++;
+  }
+
+  return {
+    vars,
+    panel: pick('.se-filter-panel'),
+    domainInput: pick('.se-filter-domain'),
+    rowSelect: pick('.se-filter-action'),
+    addSelect: pick('.se-filter-select'),
+    removeBtn: pick('.se-filter-remove'),
+    enabledForeign,
+    totalForeign,
+    ownStyleSheet: !!document.getElementById('search-enhance-styles'),
+  };
+});
+
+console.log('=== 结果过滤：样式隔离与控件配色 ===');
+console.log(
+  `  原站样式表：共 ${styleState.totalForeign} 个，仍启用 ${styleState.enabledForeign} 个（应为 0）`,
+);
+console.log(`  本脚本样式表存在：${styleState.ownStyleSheet}`);
+for (const [name, el] of [
+  ['域名输入框 .se-filter-domain', styleState.domainInput],
+  ['已有行下拉 .se-filter-action', styleState.rowSelect],
+  ['新增行下拉 .se-filter-select', styleState.addSelect],
+]) {
+  if (!el) {
+    console.log(`  ${name}：(缺失)`);
+    continue;
+  }
+  console.log(
+    `  ${name}：bg=${el.bg} color=${el.color} border=${el.border}` +
+      ` 字体=${el.font.split(',')[0]} scheme=${el.scheme}`,
+  );
+}
+
+// 输入类控件：必须用我们自己的三件套（底色 / 文字 / 描边）
+const usesOwnPalette = (el) =>
+  !!el &&
+  el.bg === styleState.vars.bg &&
+  el.color === styleState.vars.fg &&
+  el.border === styleState.vars.line;
+
+/*
+ * 按钮是另一种处理：透明底 + 前景色描边（见 .se-filter-add-btn/.se-filter-remove）。
+ * 不套用上面的三件套判据，否则会把正确的样式误判为失败。
+ */
+const isOutlineButton = (el) =>
+  !!el && el.bg === 'rgba(0, 0, 0, 0)' && el.color === styleState.vars.fg && el.border === styleState.vars.fg;
+
+/*
+ * 只比对字体栈的**首个**字族。
+ * 整串里本来就含 Arial / sans-serif 作为回退（见 base.css 的正文栈），
+ * 拿整串去匹配 Arial 会把正确的样式判成失败 —— 初版断言正是这么写错的。
+ * 首字族若不是 Helvetica 系，说明控件吃的是 UA/原生的默认字体。
+ */
+const firstFamily = (el) =>
+  (el?.font ?? '').split(',')[0].replace(/["']/g, '').trim();
+
+const stylesOk =
+  styleState.ownStyleSheet &&
+  // 原站样式表必须全部关掉
+  styleState.enabledForeign === 0 &&
+  styleState.totalForeign > 0 &&
+  // 三种输入控件都要吃我们自己的配色（这正是用户报的两个问题）
+  usesOwnPalette(styleState.domainInput) &&
+  usesOwnPalette(styleState.rowSelect) &&
+  usesOwnPalette(styleState.addSelect) &&
+  isOutlineButton(styleState.removeBtn) &&
+  /Helvetica/i.test(firstFamily(styleState.rowSelect)) &&
+  /Helvetica/i.test(firstFamily(styleState.addSelect));
+
+console.log(stylesOk ? '  ✅ 样式隔离与配色正确' : '  ❌ 样式隔离或配色不符预期');
+
+const filterOk = panelOk && badgeOk && hideOk && revealOk && parityOk && persistOk && stylesOk;
 console.log(filterOk ? '✅ 结果过滤整体通过' : '❌ 结果过滤存在失败项');
 
 /* ==========================================================================

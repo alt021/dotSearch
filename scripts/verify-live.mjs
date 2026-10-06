@@ -9,7 +9,15 @@
  * 前置：先构建 dev 产物（npm run build:dev）。
  * 需要在沙箱外运行 —— 浏览器进程无法在沙箱内启动。
  *
- *   node scripts/verify-live.mjs
+ *   node scripts/verify-live.mjs                    直连，post-load 注入
+ *   node scripts/verify-live.mjs --document-start    直连，document-start 注入
+ *   node scripts/verify-live.mjs --proxy             走 7897 代理（→ www.bing.com）
+ *   node scripts/verify-live.mjs --proxy --document-start   国际版 + document-start
+ *
+ * 关于必应的 IP 分流：直连落到 cn.bing.com（中国版），
+ * 经代理落到 www.bing.com（国际版）。两版的 DOM 与脚本时序不同，
+ * 国际版会做一次 `rdr=1` 重定向，历史上正是在这里出过启动即崩的故障，
+ * 所以两种入口都要跑。
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -32,12 +40,57 @@ const CASES = [
   { label: 'rust 第1页', url: 'https://www.bing.com/search?q=rust&setlang=zh-CN' },
 ];
 
+/*
+ * 两个可选的运行模式（默认都不开，行为与以前一致）：
+ *
+ *   --proxy           走本机 7897 代理。用途：必应按 IP 分流 ——
+ *                     直连落到 cn.bing.com（中国版），
+ *                     经代理落到 www.bing.com（国际版）。
+ *                     两版的 DOM 与脚本时序不同，需要分别验证。
+ *
+ *   --document-start  用 addInitScript 注入，精确模拟 Tampermonkey 的
+ *                     @run-at document-start（脚本早于文档树执行）。
+ *                     这是**必须**有的模式：post-load 注入测不到
+ *                     「document.head / documentElement 还不存在」这类问题，
+ *                     而线上恰恰就是这么挂的。
+ */
+const useProxy = process.argv.includes('--proxy');
+const documentStart = process.argv.includes('--document-start');
+
 const context = await launchChromitePersistent(PROFILE_DIR, {
   locale: 'zh-CN',
   viewport: { width: 1280, height: 1000 },
+  ...(useProxy ? { proxy: { server: 'http://127.0.0.1:7897' } } : {}),
 });
 // 持久化上下文启动时已经带一个空白页，直接复用
 const page = context.pages()[0] ?? (await context.newPage());
+
+if (documentStart) {
+  /*
+   * 先补一个 GM_addStyle —— 真实 Tampermonkey 会提供它，
+   * 而 @grant 里也确实声明了它。不补的话脚本会走原生回退路径，
+   * 测的就不是用户的实际运行环境了。
+   */
+  await context.addInitScript({
+    content: `window.GM_addStyle = function (css) {
+      var add = function () {
+        var el = document.createElement('style');
+        el.textContent = css;
+        (document.head || document.documentElement).appendChild(el);
+      };
+      if (document.head) add();
+      else document.addEventListener('DOMContentLoaded', add, { once: true });
+      return null;
+    };`,
+  });
+  await context.addInitScript({ content: code });
+}
+
+const mode = [
+  useProxy ? '代理 → www.bing.com' : '直连 → cn.bing.com',
+  documentStart ? 'document-start 注入' : 'post-load 注入',
+].join('，');
+console.log(`模式：${mode}\n`);
 
 /** 每个用例重置：只统计本用例产生的日志与报错 */
 let captured = [];
@@ -82,16 +135,24 @@ for (const c of CASES) {
 
   /*
    * 注入脚本主体。
-   * 这里用 evaluate + Function 构造器而非 addInitScript：
-   *   - addInitScript 在 document-start 执行，此时 document.head 尚不存在，
-   *     runner 里的 injectStyle 会直接抛错；
-   *   - 真实 UserScript 也是等页面就绪后才注入的，post-load 更贴近实际。
+   *
+   * post-load 模式（默认）用 evaluate + Function 构造器；
+   * --document-start 模式下已经通过 addInitScript 挂在上下文上，
+   * 每个新文档会自动执行，这里无需（也不该）再注入一次。
+   *
+   * 历史注记：早前这里的注释写着「addInitScript 会让 injectStyle 抛错，
+   * 所以只能 post-load」—— 那其实是在绕开一个**真 bug**
+   * （脚本在文档树建立前就访问 document.head/body）。
+   * 该 bug 已修（见 core/env.ts、core/dom.ts），现在两种模式都可用，
+   * 而 --document-start 正是能测出这类问题的模式。
    */
   const inject = () =>
-    page.evaluate((src2) => {
-      // eslint-disable-next-line no-new-func
-      new Function(src2)();
-    }, code);
+    documentStart
+      ? Promise.resolve()
+      : page.evaluate((src2) => {
+          // eslint-disable-next-line no-new-func
+          new Function(src2)();
+        }, code);
 
   /*
    * runner.start() 是异步的（内部要 await 结果容器出现），
@@ -126,16 +187,23 @@ for (const c of CASES) {
    */
   let rooted = false;
   let injectCount = 0;
-  for (let round = 0; round < 3; round++) {
+  /*
+   * document-start 模式下重试没有意义：注入挂在上下文上，
+   * 只在**新文档**产生时才会跑；当前文档失败后不会再自己跑一遍。
+   * 因此只等一轮，让脚本有足够时间完成异步的「等结果容器」。
+   */
+  const maxRounds = documentStart ? 1 : 3;
+  for (let round = 0; round < maxRounds; round++) {
     const st = await state();
     if (st.root) {
       rooted = true;
       break;
     }
-    if (st.marked) break;
+    // post-load 模式：标记在但无根容器，说明脚本跑过却没产出，再注入会被跳过
+    if (!documentStart && st.marked) break;
 
     await inject();
-    injectCount++;
+    if (!documentStart) injectCount++;
     await waitRoot();
 
     // 稳定一小段再确认：期间若发生导航，重写好的 DOM 会随文档一起消失。
@@ -238,8 +306,46 @@ for (const c of CASES) {
     out.links.hitHref === out.links.linkTotal &&
     out.links.hitBlank === out.links.linkTotal;
 
+  /*
+   * 结果过滤面板要真的能打开。
+   *
+   * 这一条对应一个真实故障：国际版（www.bing.com）上脚本在启动阶段就抛错，
+   * 页面完全没有重写、菜单也不存在，用户看到的是「过滤面板点不开」。
+   * 光断言菜单入口存在还不够 —— 必须实际走一遍
+   * 「展开菜单 → 点过滤入口 → 面板出现」，把整条链路测穿。
+   *
+   * 用程序化点击而非合成鼠标：菜单按钮的祖先在本环境会被
+   * Playwright 误判为遮挡（见 verify-strip 里的同一说明），
+   * 而这里要验的是功能链路，不是输入层。
+   */
+  const panel = await page.evaluate(() => {
+    const btn = document.querySelector('.se-menu-btn');
+    if (!btn) return { step: 'no-menu-button' };
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const popup = document.getElementById('se-menu-popup');
+    const menuOpen = popup ? !popup.hasAttribute('inert') : false;
+    const entry = document.querySelector('#se-menu-popup .se-menu-filter');
+    if (!entry) return { step: 'no-filter-entry', menuOpen };
+    entry.click();
+    const panelEl = document.querySelector('.se-filter-panel');
+    if (!panelEl) return { step: 'panel-not-opened', menuOpen };
+    const rect = panelEl.getBoundingClientRect();
+    return {
+      step: 'opened',
+      menuOpen,
+      visible: rect.width > 0 && rect.height > 0,
+      hasRows: !!document.querySelector('.se-filter-rows'),
+    };
+  });
+  const panelOk = panel.step === 'opened' && panel.menuOpen && panel.visible && panel.hasRows;
+
   // 原站无分页时（结果不足一页）不算失败
-  const ok = (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) && extraClean && linkOk && menuOk;
+  const ok =
+    (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) &&
+    extraClean &&
+    linkOk &&
+    menuOk &&
+    panelOk;
   if (!ok) failures++;
 
   console.log(
@@ -256,6 +362,10 @@ for (const c of CASES) {
     `     菜单: ${out.menu.exists ? out.menu.label : '(缺失)'}` +
       ` 入口${out.menu.linkCount} 同行=${out.menu.sameRow} 收起隐藏=${out.menu.closedHidden}` +
       ` 首项为过滤按钮=${out.menu.firstIsFilterButton}`,
+  );
+  console.log(
+    `     过滤面板: ${panel.step}` +
+      (panel.step === 'opened' ? ` 可见=${panel.visible} 列表=${panel.hasRows}` : ''),
   );
   console.log(
     `     直答区: ${out.extra.count} 个` +

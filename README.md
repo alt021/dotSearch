@@ -256,6 +256,24 @@ scripts/
 
 Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因此 `onUrlChange()` 同时打了 `pushState` / `replaceState` 补丁和 `popstate` 监听——只靠 `popstate` 会漏掉大部分换词。
 
+### document-start 下的安全前提
+
+`@run-at document-start` 意味着脚本会**早于文档树**执行。实测那一刻
+`document.documentElement` / `head` / `body` **三者全是 null**，
+`document.readyState === 'loading'`。因此启动路径上不能同步访问它们：
+
+- `waitForSelector()` 观察 `document` 本身（任何时刻都是合法 Node），
+  而不是 `document.documentElement`；
+- `injectStyle()` 在 `head` / `documentElement` 都不存在时先排队，
+  等根元素出现再插；
+- 注入标记只在启动**成功**后保留。启动若中途失败就撤销标记，
+  否则这个文档会被永久判定为「已注入」，后续重试全被挡回 ——
+  用户看到的是功能毫无反应，而控制台只有一条启动报错。
+
+国内版（`cn.bing.com`）与国际版（`www.bing.com`）在这条路径上的时序不同：
+国际版会多做一次 `rdr=1` 重定向，历史上正是这里出了问题。
+`npm run verify:intl` 专门覆盖「国际版 + document-start」这个组合。
+
 ---
 
 ## 接入 Google / 百度
@@ -320,6 +338,15 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
   数据量很小，为此多要一条 GM 权限不划算。
 - **单击恢复用事件委托**。条目会被增量追加（永页机）与整表重建（改规则），
   逐条绑定必然漏掉后来者，所以监听器挂在根容器上、走捕获阶段。
+- **重写时关掉原站样式表**。只清空原站**内容**是不够的 ——
+  Bing 的 CSS 挂在 `<head>` 上会继续全局生效，
+  用它的通用选择器盖掉我们新写的元素（实测面板里的输入框被染成
+  `#444` 文字配 `#ddd` 边框，暗色下尤其明显）。
+  CSS 的生效范围与 DOM 位置无关，所以只能 `disabled` 而不能靠搬移；
+  同时挂一个观察器，兜住 Bing 之后又插进来的样式表。
+  我们自己的样式表带 id，会被跳过；`GM_addStyle` 注入的那份没有 id，
+  因此在清理之后用原生方式补建一份带 id 的
+  （必应的 CSP 只限制 `script-src`，没有 `style-src`，自建 `<style>` 可行）。
 
 验证覆盖（`verify:strip` 的「结果过滤」段）：
 浮层开合与增删改、无效输入拦截、同域名去重、
@@ -357,16 +384,31 @@ DOM 结构相应调整：新增 `se-num` 序号栏、`se-body` 内容栏、`se-m
 验证：
 
 ```bash
-npm run verify:all              # 离线快照 + 实时站点，一次跑完
+npm run verify:all              # 离线（浅色 + 深色）+ 实时，一次跑完
 npm run verify:strip            # 离线快照，浅色
-npm run verify:strip -- --dark  # 离线快照，深色
+npm run verify:dark             # 离线快照，深色
 npm run verify:live             # 实时站点，5 个查询词（需联网）
+npm run verify:start            # 实时站点，按 document-start 注入
+npm run verify:intl             # 实时站点，走代理打国际版（www.bing.com）
 npm run sample                  # 重新抓取离线快照
 ```
 
 `verify:strip` 用抓取下来的 Bing 快照，不依赖网络，断言最细；
 `verify:live` 连真实 Bing 跑多个查询词，用来发现线上结构变化。
 两者互补。
+
+**两个实时模式值得单独说明**，它们各自覆盖一类真实故障：
+
+- `--document-start` —— 用 `addInitScript` 注入，精确模拟 Tampermonkey 的
+  `@run-at document-start`（脚本早于文档树执行）。必须跑这个模式：
+  post-load 注入时 `document.head` / `body` 早已存在，
+  测不出「文档树还没建立就去访问它」这类问题 —— 而线上正是这么挂的。
+- `--proxy` —— 必应按 IP 分流：直连落到 `cn.bing.com`（中国版），
+  经本机 7897 代理落到 `www.bing.com`（国际版）。
+  国际版会多做一次 `rdr=1` 重定向，时序与国内版不同，历史上出过
+  启动即崩、整个增强功能无反应的故障，因此国际版也要单独跑。
+
+两个开关可以叠加（`npm run verify:intl` 就是「国际版 + document-start」）。
 
 所有验证脚本统一在本机 **Chromite** 中运行，
 路径与启动方式收敛在 `scripts/lib/browser.mjs`，改浏览器只需改这一处。

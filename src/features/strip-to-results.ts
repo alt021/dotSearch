@@ -1,6 +1,6 @@
 import type { Feature } from '../types/feature.js';
 import type { EngineAdapter, SearchResult } from '../types/engine.js';
-import { log } from '../core/env.js';
+import { log, reassertOwnStyle } from '../core/env.js';
 import { captureBingSession } from './bing-session.js';
 import { getRules, matchRule, type FilterRule } from './filter-store.js';
 
@@ -252,6 +252,17 @@ export const stripToResults: Feature = {
     document.body.removeAttribute('style');
     document.documentElement.removeAttribute('style');
     document.documentElement.className = 'se-root-html';
+
+    /*
+     * 原站 DOM 已搬走，但它的样式表还挂在 <head> 上、继续全局生效。
+     * 必须在重建之前关掉，否则我们新写的元素会被原站规则挑中
+     * （见 disableForeignStylesheets 的说明）。
+     *
+     * 清理是按 id 排除自家样式表的，而 GM_addStyle 注入的那份没有 id，
+     * 会被一并关掉 —— 所以紧接着把我们的样式补回来。
+     */
+    disableForeignStylesheets();
+    reassertOwnStyle();
 
     // ---- 3. 重建结构 -------------------------------------------------------
     const root = document.createElement('div');
@@ -1051,9 +1062,84 @@ function pruneAnswerNode(node: HTMLElement): boolean {
   return text.length >= 10;
 }
 
+/*
+ * ============ 关掉原站样式表 ============
+ *
+ * 重写只清空了原站的**内容**，但 Bing 的样式表挂在 <head> 上，一直留着。
+ * CSS 的生效范围与 DOM 位置无关 —— 就算把 <link> 搬进 #se-source 也照样生效，
+ * 所以只能禁用或删除。
+ *
+ * 不管它会出什么问题（实测）：Bing 的通用选择器会盖掉我们面板里的控件，
+ * 输入框文字变 #444、边框 #ddd，暗色模式下尤其刺眼。
+ * 页面主体之所以看着还正常，是因为我们的规则恰好更具体；
+ * 一旦某条 Bing 规则更具体（或只差在加载顺序上），就会被它压过去。
+ *
+ * 用 disabled 而不是 remove：节点仍留在文档里，
+ * 原站脚本或自动翻页脚本若引用这些节点不会拿到 null。
+ */
+
+/** 这些 id 是本脚本自己的样式表，必须留着 */
+const KEEP_STYLE_IDS = new Set(['search-enhance-styles', 'se-rewrite-style']);
+
+/** 判断一个节点是否为需要禁用的原站样式表 */
+function isForeignStylesheet(node: Node): node is HTMLLinkElement | HTMLStyleElement {
+  if (!(node instanceof HTMLElement)) return false;
+  if (KEEP_STYLE_IDS.has(node.id)) return false;
+  if (node.tagName === 'STYLE') return true;
+  return node.tagName === 'LINK' && node.getAttribute('rel') === 'stylesheet';
+}
+
+/** 关掉文档中所有原站样式表（含后来者） */
+function disableForeignStylesheets(): void {
+  const sweep = (root: ParentNode): number => {
+    let count = 0;
+    for (const el of Array.from(
+      root.querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style'),
+    )) {
+      if (!isForeignStylesheet(el)) continue;
+      el.disabled = true;
+      count++;
+    }
+    return count;
+  };
+
+  const disabled = sweep(document);
+  log.warn(`[样式隔离] 已禁用 ${disabled} 个原站样式表`);
+
+  /*
+   * 一次性扫不够：Bing 的脚本在重写之后仍会继续执行
+   * （实测它会把 b_norr / b_sbText 之类的类名重新加回 body），
+   * 也就可能再插样式表。挂个观察器兜住后来者。
+   *
+   * 只在新增节点里找，不做全量重扫 —— 这个观察器挂在 document 上、
+   * 结果列表每次追加都会触发，全量重扫会白白拖慢页面。
+   */
+  if (document.documentElement.hasAttribute('data-se-style-guard')) return;
+  document.documentElement.setAttribute('data-se-style-guard', '1');
+
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of Array.from(record.addedNodes)) {
+        if (isForeignStylesheet(node)) {
+          (node as HTMLLinkElement | HTMLStyleElement).disabled = true;
+          continue;
+        }
+        // 新增的是容器时，检查其内部是否夹带了样式表
+        if (node instanceof HTMLElement) {
+          for (const el of Array.from(
+            node.querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style'),
+          )) {
+            if (isForeignStylesheet(el)) el.disabled = true;
+          }
+        }
+      }
+    }
+  });
+  observer.observe(document, { childList: true, subtree: true });
+}
+
 /**
- * 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
-const COMPLIANCE_PATTERN =
+ * 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */const COMPLIANCE_PATTERN =
   /隐私|条款|条款|协议|备案|许可|版权|法律|声明|政策|服务条款|隐私政策|隐私声明|京 ICP|沪 ICP|粤 ICP|ICP 备|公网安备|copyright|privacy|terms|legal|cookie/i;
 
 /**
