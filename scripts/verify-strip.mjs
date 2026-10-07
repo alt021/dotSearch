@@ -1367,9 +1367,12 @@ console.log(parityOk ? '  ✅ 与普通条目完全一致' : '  ❌ 与普通条
 /* ---------- 6. 规则跨刷新持久化 ---------- */
 
 /*
- * 过滤配置存 localStorage（用户级偏好），换页 / 刷新都应留着。
+ * 过滤配置是用户级偏好，换页 / 刷新都应留着。
  * 这里直接重载页面 —— 而重写每次都会重建列表，
  * 因此同时验证了「规则在首次重写时就生效」，而不是等用户再进一次设置。
+ *
+ * 本环境没有 GM 存储（脚本管理器的那套），走的是 localStorage 回退路径，
+ * 所以这里直接读 localStorage。跨源共享另见后面的专项验证段。
  */
 const persistedBefore = await page.evaluate(() =>
   localStorage.getItem('search-enhance:filter-rules'),
@@ -1573,6 +1576,173 @@ const filterOk = panelOk && badgeOk && hideOk && revealOk && parityOk && persist
 console.log(filterOk ? '✅ 结果过滤整体通过' : '❌ 结果过滤存在失败项');
 
 /* ==========================================================================
+   结果过滤：规则跨源共享（cn.bing.com ↔ www.bing.com）
+   --------------------------------------------------------------------------
+   针对一个实际故障补的回归断言：
+     用户在 cn 配好的屏蔽项，到 www 上既看不到、也改不动、更不生效。
+   根因是 **localStorage 按源隔离**，而 cn.bing.com 与 www.bing.com
+   是两个源 —— 两边永远是两本账，配多少条都过不去。
+
+   验证方式：用**两个不同的端口**提供同一份样例页。
+   端口是源的一部分，两个端口即两个源，localStorage 天然隔离；
+   再给页面补一份**可携带**的 GM 存储桩，模拟脚本管理器的
+   「脚本级存储跨源共享」。于是可以断言：
+     · A 源写的规则，B 源不用任何本地配置就能列出来；
+     · 而且真的作用于结果列表（B 源隐藏条数与 A 源一致）；
+     · A 源 localStorage 里的旧版本数据会被一次性迁移进共享存储。
+   ========================================================================== */
+
+const RULES_KEY = 'search-enhance:filter-rules';
+
+/** 换个端口就是换个源（源 = 协议 + 主机 + 端口） */
+const server2 = createServer((req, res) => {
+  if (req.url === '/favicon.ico') {
+    res.writeHead(204).end();
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(html);
+});
+await new Promise((r) => server2.listen(0, '127.0.0.1', r));
+const urlOtherOrigin = `http://127.0.0.1:${server2.address().port}/bing.html?q=test`;
+
+/**
+ * 用一份「可携带的共享存储」启动页面。
+ * 返回启动前的 localStorage 快照 —— 调用方据此确认该源上原本没有配置。
+ */
+async function bootWithSharedStore(target, url, seed) {
+  await target.goto(url, { waitUntil: 'domcontentloaded' });
+  const localBefore = await target.evaluate((k) => localStorage.getItem(k), RULES_KEY);
+  await target.evaluate(
+    ({ data, src }) => {
+      globalThis.__SE_FORCE_ENGINE__ = 'bing';
+      // 模拟脚本管理器注入的 GM 存储 API（同步版）
+      const shared = { ...data };
+      globalThis.__seShared = shared;
+      globalThis.GM_getValue = (key, fallback) => (key in shared ? shared[key] : fallback);
+      globalThis.GM_setValue = (key, value) => {
+        shared[key] = value;
+      };
+      new Function(src)();
+    },
+    { data: seed, src: code },
+  );
+  await target.waitForTimeout(1500);
+  return localBefore;
+}
+
+/** 读出页面上那份共享存储（模拟「换个站点打开」时能看到的内容） */
+const sharedOf = (target) => target.evaluate(() => globalThis.__seShared ?? null);
+
+/** 打开设置面板，列出其中的规则行 */
+const panelRulesOf = (target) =>
+  target.evaluate(() => {
+    const btn = document.querySelector('.se-menu-btn');
+    if (!btn) return { ok: false, reason: '菜单按钮缺失' };
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const entry = document.querySelector('#se-menu-popup .se-menu-filter');
+    if (!entry) return { ok: false, reason: '过滤入口缺失' };
+    entry.click();
+    const rows = [...document.querySelectorAll('.se-filter-row')].map((r) => ({
+      domain: r.querySelector('.se-filter-domain')?.value ?? '',
+      action: r.querySelector('.se-filter-action')?.value ?? '',
+    }));
+    document.querySelector('.se-filter-close')?.click();
+    return { ok: true, rows };
+  });
+
+// ---- A 源（模拟 cn.bing.com）----
+const pageA = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+// 先塞一条「旧版本数据」：升级前的规则只存在于本源的 localStorage 里。
+// 清空是必须的 —— 主页面跑样式段时往同一个源写过一条 example.com，
+// 留着会让「迁移」这一步的对照不干净。
+await pageA.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+await pageA.evaluate(() => localStorage.clear());
+await pageA.evaluate(
+  ([k, v]) => localStorage.setItem(k, v),
+  [RULES_KEY, JSON.stringify([{ domain: 'blog.csdn.net', action: 'badge' }])],
+);
+
+const aLocalBefore = await bootWithSharedStore(pageA, pageUrl, {});
+const aSharedAfterBoot = await sharedOf(pageA);
+const aMigrated = aSharedAfterBoot?.[RULES_KEY] ? JSON.parse(aSharedAfterBoot[RULES_KEY]) : null;
+
+// 再通过面板 UI 加一条（走真实的输入 + 按钮路径），看它落到哪
+const aAdded = await pageA.evaluate(() => {
+  document.querySelector('.se-menu-btn').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  document.querySelector('#se-menu-popup .se-menu-filter').click();
+  const input = document.querySelector('.se-filter-add .se-filter-input');
+  const select = document.querySelector('.se-filter-add .se-filter-select');
+  input.value = 'zhihu.com';
+  select.value = 'hide';
+  document.querySelector('.se-filter-add .se-filter-add-btn').click();
+  // 行数要在关面板之前数（关掉即整块移除）
+  const rows = [...document.querySelectorAll('.se-filter-row')].map(
+    (r) => r.querySelector('.se-filter-domain')?.value,
+  );
+  document.querySelector('.se-filter-close')?.click();
+  return { rows };
+});
+await pageA.waitForTimeout(200);
+const aHidden = await pageA.evaluate(() => document.querySelectorAll('.se-item-hidden').length);
+const aSharedFinal = await sharedOf(pageA);
+
+// ---- B 源（模拟 www.bing.com）：只带上共享存储，不带任何本地配置 ----
+const pageB = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+const bLocalBefore = await bootWithSharedStore(pageB, urlOtherOrigin, aSharedFinal ?? {});
+const bPanel = await panelRulesOf(pageB);
+const bState = await pageB.evaluate(() => ({
+  local: localStorage.getItem('search-enhance:filter-rules'),
+  hidden: document.querySelectorAll('.se-item-hidden').length,
+  total: document.querySelectorAll('.se-item').length,
+  root: Boolean(document.getElementById('se-root')),
+}));
+
+console.log('=== 结果过滤：规则跨源共享 ===');
+console.log(`  A 源启动前 localStorage：${aLocalBefore}`);
+console.log(`  迁移进共享存储：${JSON.stringify(aMigrated)}`);
+console.log(`  A 源面板加规则后：规则行 ${JSON.stringify(aAdded.rows)}，页面隐藏 ${aHidden} 条`);
+console.log(`  共享存储（应含两条）：${aSharedFinal?.[RULES_KEY] ?? '(空)'}`);
+console.log(`  B 源启动前 localStorage：${bLocalBefore}（应为 null，说明两源确实不共享）`);
+console.log(`  B 源面板列出：${JSON.stringify(bPanel.rows ?? bPanel.reason)}`);
+console.log(
+  `  B 源页面：隐藏 ${bState.hidden} 条 / 共 ${bState.total} 条结果` +
+    `，其 localStorage：${bState.local}（应为 null）`,
+);
+
+const crossOriginOk =
+  // A 源：旧版本那一条被迁移进了共享存储（升级后规则不能凭空消失）
+  Array.isArray(aMigrated) &&
+  aMigrated.some((r) => r.domain === 'csdn.net' && r.action === 'badge') &&
+  // A 源：面板里应同时列着迁移来的与新增的两条
+  aAdded.rows.length === 2 &&
+  aAdded.rows.includes('csdn.net') &&
+  aAdded.rows.includes('zhihu.com') &&
+  // A 源：新增与迁移来的两条都在共享存储里
+  (aSharedFinal?.[RULES_KEY] ?? '').includes('csdn.net') &&
+  (aSharedFinal?.[RULES_KEY] ?? '').includes('zhihu.com') &&
+  // A 源的规则确实生效，否则 B 源那侧比的是「0 == 0」这种假通过
+  aHidden > 0 &&
+  // B 源原本没有任何本地配置 —— 两个源不共享 localStorage 这个前提成立
+  bLocalBefore === null &&
+  // 但 B 源仍列出 A 源配置的两条规则
+  bPanel.ok &&
+  bPanel.rows.length === 2 &&
+  bPanel.rows.some((r) => r.domain === 'zhihu.com' && r.action === 'hide') &&
+  bPanel.rows.some((r) => r.domain === 'csdn.net' && r.action === 'badge') &&
+  // 而且真的生效：隐藏条数与 A 源一致
+  bState.root &&
+  bState.hidden === aHidden &&
+  // B 源的规则全部来自共享存储，它自己的 localStorage 始终是空的
+  bState.local === null;
+
+console.log(crossOriginOk ? '  ✅ 跨源共享生效' : '  ❌ 跨源共享不符预期');
+
+await pageA.close();
+await pageB.close();
+server2.close();
+
+/* ==========================================================================
    已登录分支专项验证
    --------------------------------------------------------------------------
    上面跑的是样例快照，它处于**未登录**状态，只能覆盖「点击登录 Bing」。
@@ -1639,4 +1809,4 @@ console.log(signedInOk ? '  ✅ 已登录分支正确' : '  ❌ 已登录分支�
 
 await browser.close();
 server.close();
-process.exit(pass && pagerOk && filterOk && signedInOk ? 0 : 1);
+process.exit(pass && pagerOk && filterOk && crossOriginOk && signedInOk ? 0 : 1);

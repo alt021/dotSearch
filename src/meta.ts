@@ -12,12 +12,18 @@ export const ENGINE_IDS = ['bing', 'google', 'baidu'] as const;
 /**
  * 注入页面的脚本权限。
  *
- * 只保留真正需要的：GM_addStyle 用于注入样式。
- * 原先的 GM_registerMenuCommand（弹出菜单）与
- * GM_getValue / GM_setValue（功能开关持久化）随开关机制一并移除，
- * 顺带缩小了权限面。
+ * - `GM_addStyle`    注入样式表。
+ * - `GM_getValue` / `GM_setValue`
+ *   过滤规则的持久化。**必须用脚本级存储而不是 localStorage**：
+ *   必应按 IP 分流，cn.bing.com 与 www.bing.com 是两个源，
+ *   而 localStorage 按源隔离 —— 用它会导致「在 cn 配好的规则
+ *   到 www 上看不到也不生效」。脚本级存储跨源共享，正好对症。
+ *
+ * 早前移除这两个权限是判断失误（当时只考虑了数据量与权限面，
+ * 漏了跨源这一条）；用户反馈配置不互通后改回。
+ * 其余权限（GM_registerMenuCommand / GM_openInTab 等）仍不需要。
  */
-export const GRANTS = ['GM_addStyle'] as const;
+export const GRANTS = ['GM_addStyle', 'GM_getValue', 'GM_setValue'] as const;
 
 /**
  * @match 规则 —— 已接入适配器的引擎。

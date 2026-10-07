@@ -5,16 +5,36 @@
  *   badge   在标题前加「已排除」标签（结果照常显示，仅作提示）
  *   hide    默认隐藏该结果，但保留序号与位置，可单击展开
  *
- * ## 为什么不用 GM_getValue / GM_setValue
+ * ## 为什么用 GM_getValue / GM_setValue，而不是 localStorage
  *
- * 那需要额外两条 @grant。而 localStorage 在本场景足够：
- * 数据量很小（几条域名），且读写都发生在页面内。
- * 少一条权限就少一分安装时的顾虑。
+ * 早期版本刻意避开了这两条 @grant，只用 localStorage，
+ * 理由是「数据少、少一条权限少一分安装顾虑」。
+ * 但那个判断漏掉了一件事：**localStorage 按源隔离**。
+ *
+ * 必应按 IP 分流 —— 直连落到 cn.bing.com，经代理落到 www.bing.com，
+ * 两者是**不同的源**。于是用户在 cn 配好的规则，到 www 上
+ * 既看不到、也改不动、更不生效，像是配置丢了。用户实际报过这个问题。
+ *
+ * 脚本管理器（Tampermonkey 等）的脚本级存储是**跨源共享**的：
+ * 同一个脚本的所有 @match 共用一份，正好对症。
+ * 代价是多两条 @grant —— 在「配置到底能不能用」面前，这笔账是划算的。
+ *
+ * localStorage 保留，但只承担两件事：
+ *   1. **回退**：不在脚本管理器里运行时（控制台调试、本仓库的验证脚本）
+ *      照常可用，不报错；
+ *   2. **迁移与镜像**：旧版本只写 localStorage，首次读到共享存储
+ *      「从未写过」时把它搬过去，用户升级后规则不会凭空消失。
  *
  * ## 与 bing-session 的差别
  *
  * 登录状态是「页面级」信息，换一次搜索就该重新采集，用 sessionStorage；
- * 过滤配置是「用户级」偏好，要跨会话留着，所以用 localStorage。
+ * 过滤配置是「用户级」偏好，要跨会话、**跨站点**留着。
+ *
+ * ## 已知限制
+ *
+ * 跨标签实时同步没做（那需要再加 GM_addValueChangeListener）。
+ * 改动会在**下一次重写**时生效：刷新页面，或在另一站点重新搜索。
+ * 同一页面内改动是即时生效的（面板改完会立刻重建列表）。
  */
 
 /** 匹配到的域名要做的事 */
@@ -102,38 +122,115 @@ export function normalizeDomain(input: string): string {
   return parts.slice(-2).join('.');
 }
 
-/** 读取全部规则；存储损坏时返回空数组而不是抛错 */
-export function getRules(): FilterRule[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
+/* -------------------------------------------------------------------------
+ * 持久化：共享存储优先，localStorage 回退
+ * ---------------------------------------------------------------------- */
 
-    /*
-     * 读的时候就重放一次规范化，而不是只做校验。
-     *
-     * 规范化规则是会变的（例如现在改成「只留两段」）。
-     * 若只校验，旧数据里 blog.csdn.net 这种三段域名会因
-     * normalizeDomain 之后不等而**被当成脏数据丢掉** ——
-     * 用户升级版本后发现规则凭空消失，却没有任何提示。
-     * 所以这里把旧的写法重新规范化，顺手合并去重。
-     */
-    const merged = new Map<string, FilterAction>();
-    for (const value of parsed) {
-      if (!value || typeof value !== 'object') continue;
-      const r = value as Record<string, unknown>;
-      if (typeof r.domain !== 'string') continue;
-      if (r.action !== 'badge' && r.action !== 'hide') continue;
-      const domain = normalizeDomain(r.domain);
-      if (!domain) continue;
-      // 后写的覆盖同域名的旧写法，与 setRules 保持一致
-      merged.set(domain, r.action);
-    }
-    return [...merged].map(([domain, action]) => ({ domain, action }));
+/**
+ * 共享存储（脚本级、跨源）是否可用。
+ *
+ * 用 `typeof` 判断而不是直接调用：标识符不存在时 `typeof` 不抛错，
+ * 于是能在非脚本管理器环境下静默回退到 localStorage。
+ */
+function hasSharedStore(): boolean {
+  return typeof GM_getValue === 'function' && typeof GM_setValue === 'function';
+}
+
+/**
+ * 读共享存储。
+ *
+ * `present` 用来区分「从未写过」与「写成了空列表」——
+ * 只有前者才该去迁移 localStorage 的旧数据。
+ * 否则用户清空全部规则后，各源 localStorage 里那份旧数据会被反复搬回来。
+ */
+function readShared(): { present: boolean; raw: string | null } {
+  if (!hasSharedStore()) return { present: false, raw: null };
+  try {
+    const value = GM_getValue<unknown>(STORAGE_KEY, null);
+    if (value === null || value === undefined) return { present: false, raw: null };
+    // 正常都是字符串（我们自己 JSON.stringify 后写入）；
+    // 万一被写成了对象，兜一下，不至于整个规则列表读不出来。
+    return { present: true, raw: typeof value === 'string' ? value : JSON.stringify(value) };
+  } catch {
+    return { present: false, raw: null };
+  }
+}
+
+function writeShared(raw: string): void {
+  if (!hasSharedStore()) return;
+  try {
+    GM_setValue(STORAGE_KEY, raw);
+  } catch {
+    /* 写失败不影响本次会话：面板改完会立刻重建列表，内存态是对的 */
+  }
+}
+
+function readLocal(): string | null {
+  try {
+    return localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocal(raw: string): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, raw);
+  } catch {
+    /* 隐私模式等场景可能不可写 */
+  }
+}
+
+/** 把原始 JSON 串解析成规则数组；顺带重放规范化、合并去重。损坏时返回空数组 */
+function parseRules(raw: string | null): FilterRule[] {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
   } catch {
     return [];
   }
+  if (!Array.isArray(parsed)) return [];
+
+  /*
+   * 读的时候就重放一次规范化，而不是只做校验。
+   *
+   * 规范化规则是会变的（例如曾改成「只留两段」）。
+   * 若只校验，旧数据里 blog.csdn.net 这种三段域名会因
+   * normalizeDomain 之后不等而**被当成脏数据丢掉** ——
+   * 用户升级版本后发现规则凭空消失，却没有任何提示。
+   * 所以这里把旧的写法重新规范化，顺手合并去重。
+   */
+  const merged = new Map<string, FilterAction>();
+  for (const value of parsed) {
+    if (!value || typeof value !== 'object') continue;
+    const r = value as Record<string, unknown>;
+    if (typeof r.domain !== 'string') continue;
+    if (r.action !== 'badge' && r.action !== 'hide') continue;
+    const domain = normalizeDomain(r.domain);
+    if (!domain) continue;
+    // 后写的覆盖同域名的旧写法，与 setRules 保持一致
+    merged.set(domain, r.action);
+  }
+  return [...merged].map(([domain, action]) => ({ domain, action }));
+}
+
+/**
+ * 读取全部规则；存储损坏时返回空数组而不是抛错。
+ *
+ * 顺序：共享存储 →（它「从未写过」时）把 localStorage 的旧数据迁移过去。
+ * 迁移只发生一次：搬完共享存储里就有了值，各源此后读的是同一份。
+ */
+export function getRules(): FilterRule[] {
+  const shared = readShared();
+  if (shared.present) return parseRules(shared.raw);
+
+  const legacy = parseRules(readLocal());
+  if (legacy.length > 0) {
+    // 旧版本只写 localStorage，这里补一次迁移，避免用户升级后规则消失
+    writeShared(JSON.stringify(legacy));
+  }
+  return legacy;
 }
 
 /** 覆盖写入全部规则（已做规范化与去重，后写的规则覆盖同域名旧规则） */
@@ -144,12 +241,15 @@ export function setRules(rules: FilterRule[]): void {
     if (!domain) continue;
     merged.set(domain, rule.action === 'hide' ? 'hide' : 'badge');
   }
-  const list = [...merged].map(([domain, action]) => ({ domain, action }));
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
-  } catch {
-    /* 隐私模式下可能不可写；此时本次会话内的过滤仍由内存态生效 */
-  }
+  const raw = JSON.stringify([...merged].map(([domain, action]) => ({ domain, action })));
+
+  /*
+   * 共享存储是权威来源（cn / www 共用一份）；
+   * localStorage 一并写，兼顾回退与镜像 ——
+   * 后者让配置在 devtools 里可见，也让共享存储被清空时还能恢复。
+   */
+  writeShared(raw);
+  writeLocal(raw);
 }
 
 /**

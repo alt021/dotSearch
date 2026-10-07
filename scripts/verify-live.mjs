@@ -67,9 +67,12 @@ const page = context.pages()[0] ?? (await context.newPage());
 
 if (documentStart) {
   /*
-   * 先补一个 GM_addStyle —— 真实 Tampermonkey 会提供它，
-   * 而 @grant 里也确实声明了它。不补的话脚本会走原生回退路径，
-   * 测的就不是用户的实际运行环境了。
+   * 先补上 @grant 里声明的那几个 GM 接口 —— 真实 Tampermonkey 会提供它们。
+   * 不补的话脚本会走原生回退路径，测的就不是用户的实际运行环境了。
+   *
+   * 存储桩挂在这个 context 上：同一 context 内的多个用例共用一份，
+   * 与脚本管理器「脚本级存储」的语义一致（跨源共享）。
+   * 每个新文档都要重新定义，所以放在 addInitScript 里而不是注入一次。
    */
   await context.addInitScript({
     content: `window.GM_addStyle = function (css) {
@@ -81,7 +84,17 @@ if (documentStart) {
       if (document.head) add();
       else document.addEventListener('DOMContentLoaded', add, { once: true });
       return null;
-    };`,
+    };
+    // 存储桩：值挂在 window 上，跨文档不保留（每个文档重新初始化），
+    // 这对本脚本的验证目标是够的 —— 这里只关心重写与面板能否工作在
+    // 「有 GM 存储」的环境下，跨源共享由 verify-strip 的专项段落覆盖。
+    window.GM_getValue = function (key, fallback) {
+      return key in window.__gmStore ? window.__gmStore[key] : fallback;
+    };
+    window.GM_setValue = function (key, value) {
+      window.__gmStore[key] = value;
+    };
+    window.__gmStore = Object.create(null);`,
   });
   await context.addInitScript({ content: code });
 }
