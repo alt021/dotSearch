@@ -1,6 +1,6 @@
 import type { Feature } from '../types/feature.js';
 import type { EngineAdapter, SearchResult } from '../types/engine.js';
-import { log, reassertOwnStyle } from '../core/env.js';
+import { log } from '../core/env.js';
 import { captureBingSession } from './bing-session.js';
 import { getRules, matchRule, type FilterRule } from './filter-store.js';
 
@@ -310,17 +310,13 @@ export const stripToResults: Feature = {
     document.documentElement.className = 'se-root-html';
 
     /*
-     * 原站 DOM 已搬走，但它的样式表还挂在 <head> 上、继续全局生效，
-     * 会用它自己的通用选择器盖掉我们新写的元素（实测面板里的输入框
-     * 被染成 #444 文字配 #ddd 边框）。故整体禁用 ——
-     * CSS 的生效范围与 DOM 位置无关，搬进 #se-source 也不管用。
+     * 这里**不再**禁用原站的样式表。
      *
-     * 清理是按 id 排除自家样式表的，而 GM_addStyle 注入的那份没有 id，
-     * 会被一并关掉，所以紧接着把我们的样式补回来。
+     * 那样做会连带关掉其它脚本（尤其东方永页机工具条）的样式，
+     * 而且会让只靠原站 CSS 隐藏的浮层全部显形（overlay-dimmer 就是全屏遮罩）。
+     * 我们的控件配色改由 base.css 里的 `!important` 兜底解决，
+     * 详细取舍见文件末尾「关于原站样式表」那段说明。
      */
-    disableForeignStylesheets();
-    reassertOwnStyle();
-
     document.body.appendChild(root);
 
     // 隐藏结果的「单击展开」用事件委托，无需给每个条目单独绑定
@@ -757,8 +753,21 @@ interface PageLink {
 /** 从 URL 串中提取 first= 偏移量 */
 const FIRST_PARAM_RE = /[?&]first=(\d+)/g;
 
-/** 分页可能出现的容器，用于等待其渲染完成 */
-export const PAGINATION_HINT_SELECTOR = '.b_pag, .sb_pagF, .sb_pag, a[href*="first="]';
+/**
+ * 分页「线索」= **真正可点的页码链接**，而不是分页容器。
+ *
+ * ⚠️ 这里踩过坑：原先把 `.b_pag` / `.sb_pagF` 这些**容器**当线索，
+ * 而必应是「先渲染空容器、稍后才填页码」的两步 ——
+ * 于是等待函数一看到容器就立刻返回，紧接着提取到 0 个页码，
+ * 页面表现为「原站分了 3 页却只显示 1 页」，且时快时慢（竞态）。
+ * 判据必须落在容器**内部的链接**上：
+ *   - `a[href*="first="]`  换页链接（Bing 的页码都带 first= 偏移）
+ *   - `.b_pag a` / `.sb_pagF a`  容器内的页码链接
+ * 注意 `.b_pag` 内还有一个 `<link rel="stylesheet">`，
+ * 但那是 `<link>` 不是 `<a>`，不会被误判。
+ */
+export const PAGINATION_HINT_SELECTOR =
+  'a[href*="first="], .b_pag a, .sb_pagF a, .sb_pag a';
 
 /** 单页结果数（Bing 默认 10）；由偏移量差值自动校正 */
 const DEFAULT_PAGE_SIZE = 10;
@@ -797,6 +806,7 @@ function waitForPagination(timeout: number): Promise<void> {
     observer.observe(document.documentElement, { childList: true, subtree: true });
   });
 }
+
 
 /** 收集页面中出现的所有 first= 偏移量 */
 function collectPageOffsets(): number[] {
@@ -1074,98 +1084,27 @@ function pruneAnswerNode(node: HTMLElement): boolean {
 }
 
 /*
- * ============ 关掉原站样式表 ============
+ * ============ 关于原站样式表：**刻意不动它们** ============
  *
- * 重写只清空了原站的**内容**，但 Bing 的样式表挂在 <head> 上，一直留着。
- * CSS 的生效范围与 DOM 位置无关 —— 就算把 <link> 搬进 #se-source 也照样生效，
- * 所以只能禁用或删除。
+ * 曾经这里是「把必应的样式表全部 disabled」—— 理由是它的通用选择器会盖掉
+ * 我们面板里的控件（实测输入框文字被染成 #444、边框 #ddd）。
  *
- * 不管它会出什么问题（实测）：Bing 的通用选择器会盖掉我们面板里的控件，
- * 输入框文字变 #444、边框 #ddd，暗色模式下尤其刺眼。
- * 页面主体之所以看着还正常，是因为我们的规则恰好更具体；
- * 一旦某条 Bing 规则更具体（或只差在加载顺序上），就会被它压过去。
+ * 那个做法已经**回退**，因为它连带的破坏远大于收益：
  *
- * 用 disabled 而不是 remove：节点仍留在文档里，
- * 原站脚本或自动翻页脚本若引用这些节点不会拿到 null。
+ *  1. **别的脚本的样式也一起被关掉。** 东方永页机（Pagetual）的侧边浮动工具条
+ *     是它自己注入 CSS 渲染的，一并禁用后工具条完全不成样子。
+ *     这个扩展是本项目要协同的对象，不能伤到它。
+ *  2. **原本靠原站 CSS 才隐藏的元素会全部显形。** 实测必应会往 body 插
+ *     `div.overlay-dimmer`（position:fixed、z-index:9998、pointer-events:auto、
+ *     铺满视口），它只靠必应样式表里的 `.b_hide { display:none }` 才不显示 ——
+ *     CSS 一禁，它就变成全屏点击拦截层，整页点不动。
+ *
+ * 现在改为**与必应样式表共存**，用两个更精确的手段解决各自的问题：
+ *   - 我们的控件配色改由 `!important` 兜底（见 base.css 的「控件配色兜底」段），
+ *     只作用于自己的类名，不碰任何第三方样式；
+ *   - 必应那几件确实不该出现在重写页上的 UI（选中文字的快捷搜索浮窗）
+ *     用**按 id 精确命中**的规则隐藏，同样不波及第三方。
  */
-
-/** 这些 id 是本脚本自己的样式表，必须留着 */
-const KEEP_STYLE_IDS = new Set(['search-enhance-styles', 'se-rewrite-style']);
-
-/** 判断一个节点是否为需要禁用的原站样式表 */
-function isForeignStylesheet(node: Node): node is HTMLLinkElement | HTMLStyleElement {
-  if (!(node instanceof HTMLElement)) return false;
-  if (KEEP_STYLE_IDS.has(node.id)) return false;
-  if (node.tagName === 'STYLE') return true;
-  return node.tagName === 'LINK' && node.getAttribute('rel') === 'stylesheet';
-}
-
-/** 关掉文档中所有原站样式表（含后来者） */
-function disableForeignStylesheets(): void {
-  const sweep = (root: ParentNode): number => {
-    let count = 0;
-    for (const el of Array.from(
-      root.querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style'),
-    )) {
-      if (!isForeignStylesheet(el)) continue;
-      el.disabled = true;
-      count++;
-    }
-    return count;
-  };
-
-  const disabled = sweep(document);
-  log.warn(`[样式隔离] 已禁用 ${disabled} 个原站样式表`);
-
-  /*
-   * 一次性扫不够：Bing 的脚本在重写之后仍会继续执行
-   * （实测它会把 b_norr / b_sbText 之类的类名重新加回 body），
-   * 也就可能再插样式表。挂个观察器兜住后来者。
-   *
-   * 只在新增节点里找，不做全量重扫 —— 这个观察器挂在 document 上、
-   * 结果列表每次追加都会触发，全量重扫会白白拖慢页面。
-   *
-   * 属性也要看：实测有少数 <link> 是**先插入、后设置 rel**
-   * （创建时不带 rel，插入后才赋成 stylesheet），
-   * 只看 childList 会漏掉它们 —— 那 4 个漏网的样式表就是这么来的。
-   */
-  if (document.documentElement.hasAttribute('data-se-style-guard')) return;
-  document.documentElement.setAttribute('data-se-style-guard', '1');
-
-  const observer = new MutationObserver((records) => {
-    for (const record of records) {
-      // 属性变化：目标是 <link> 时重新判定一次
-      if (record.type === 'attributes') {
-        const el = record.target;
-        if (el instanceof HTMLElement && !(el as HTMLLinkElement).disabled && isForeignStylesheet(el)) {
-          (el as HTMLLinkElement).disabled = true;
-        }
-        continue;
-      }
-
-      for (const node of Array.from(record.addedNodes)) {
-        if (isForeignStylesheet(node)) {
-          (node as HTMLLinkElement | HTMLStyleElement).disabled = true;
-          continue;
-        }
-        // 新增的是容器时，检查其内部是否夹带了样式表
-        if (node instanceof HTMLElement) {
-          for (const el of Array.from(
-            node.querySelectorAll<HTMLLinkElement | HTMLStyleElement>('link[rel="stylesheet"], style'),
-          )) {
-            if (isForeignStylesheet(el)) el.disabled = true;
-          }
-        }
-      }
-    }
-  });
-  observer.observe(document, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ['rel', 'href'],
-  });
-}
 
 /** 判定链接文案是否属于备案 / 隐私 / 条款等合规信息 */
 const COMPLIANCE_PATTERN =

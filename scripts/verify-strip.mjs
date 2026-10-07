@@ -1409,19 +1409,23 @@ console.log(persistOk ? '  ✅ 持久化正确' : '  ❌ 持久化不符预期')
 // 清掉规则，避免污染后续段落
 await clearRulesDirect();
 
-/* ---------- 7. 样式隔离与控件配色 ---------- */
+/* ---------- 7. 样式共存与控件配色 ---------- */
 
 /*
- * 针对一个真实故障补的回归断言：
- *   面板在暗色模式下「大量配色错误」，且下拉框完全没有自定义样式。
+ * 这一段守着两件互相牵制的事，都来自真实故障：
  *
- * 两个独立成因，都要测住：
- *   a. 原站样式表从未被禁用。重写只清了原站**内容**，
- *      但 Bing 的 CSS 挂在 <head> 上继续全局生效，
- *      把我们的控件染成了它自己的配色（输入框文字变 #444、边框 #ddd）。
- *   b. 已有规则行的下拉框用 `.se-filter-action`，
- *      而 CSS 只覆盖了 `.se-filter-select` —— 那个下拉框吃的是原生外观，
- *      字体是 Arial、背景是 UA 的白。
+ * 1. **不能禁用原站（以及第三方）的样式表。**
+ *    曾有一版为了修配色问题把必应样式表整体 disabled，结果：
+ *      - 东方永页机（Pagetual）的侧边浮动工具条是它自己注入 CSS 渲染的，
+ *        一并被禁用后完全走样；
+ *      - 只靠原站 CSS 隐藏的浮层全部显形，`overlay-dimmer`
+ *        变成一个铺满视口、pointer-events:auto 的遮罩，整页点不动。
+ *    所以现在断言「一个原站样式表都不许被禁用」。
+ *
+ * 2. **控件配色仍必须是我们自己的。**
+ *    不禁用别人的 CSS，就意味着必应那条更具体的 `input` 规则会生效
+ *    （实测把输入框染成 #444 文字 + #ddd 边框）。我们改由自己的
+ *    `!important` 兜底来赢，这里断言结果确实赢了。
  *
  * 配色断言不写死色值，而是与当前主题下的 CSS 变量比对 ——
  * 这样浅色与深色两次运行（verify:strip / verify:strip --dark）都成立。
@@ -1460,13 +1464,13 @@ const styleState = await page.evaluate(() => {
     return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor, font: cs.fontFamily, scheme: cs.colorScheme };
   };
 
-  // 统计仍然启用的原站样式表
-  let enabledForeign = 0;
+  // 统计原站样式表有没有被我们动过（被禁用即视为动过）
+  let disabledForeign = 0;
   let totalForeign = 0;
   for (const el of document.querySelectorAll('link[rel="stylesheet"], style')) {
     if (el.id === 'search-enhance-styles' || el.id === 'se-rewrite-style') continue;
     totalForeign++;
-    if (!el.disabled) enabledForeign++;
+    if (el.disabled) disabledForeign++;
   }
 
   return {
@@ -1476,17 +1480,37 @@ const styleState = await page.evaluate(() => {
     rowSelect: pick('.se-filter-action'),
     addSelect: pick('.se-filter-select'),
     removeBtn: pick('.se-filter-remove'),
-    enabledForeign,
+    disabledForeign,
     totalForeign,
     ownStyleSheet: !!document.getElementById('search-enhance-styles'),
+    /*
+     * 过滤浮层的宿主。
+     *
+     * 必须挂在 #se-root 里，不能挂 document.body ——
+     * 国际版（www.bing.com）上必应自带 MutationObserver，会把 body 下
+     * 它不认识的子节点摘掉，浮层挂上去几毫秒就被删除，
+     * 表现为「面板打开了又消失」、用户则是「面板打不开」。
+     * 这里断言宿主，防止以后有人又改回去。
+     */
+    overlayHost: document.querySelector('.se-filter-overlay')?.parentElement?.id ?? null,
+    // 必应选中文字的快捷搜索浮窗：规则应已把它隐去
+    qsBox: (() => {
+      const el = document.getElementById('qs_searchBoxOuter');
+      return el ? getComputedStyle(el).display : null;
+    })(),
   };
 });
 
-console.log('=== 结果过滤：样式隔离与控件配色 ===');
+console.log('=== 结果过滤：样式共存与控件配色 ===');
 console.log(
-  `  原站样式表：共 ${styleState.totalForeign} 个，仍启用 ${styleState.enabledForeign} 个（应为 0）`,
+  `  原站样式表：共 ${styleState.totalForeign} 个，被我们禁用的 ${styleState.disabledForeign} 个（应为 0）`,
 );
 console.log(`  本脚本样式表存在：${styleState.ownStyleSheet}`);
+console.log(`  过滤浮层宿主：${styleState.overlayHost ?? '(未打开)'}（应为 se-root）`);
+console.log(
+  `  必应选中浮窗 #qs_searchBoxOuter：${styleState.qsBox ?? '(页面上尚未创建)'}` +
+    (styleState.qsBox === null || styleState.qsBox === 'none' ? ' ✓' : ' ✗ 应被隐藏'),
+);
 for (const [name, el] of [
   ['域名输入框 .se-filter-domain', styleState.domainInput],
   ['已有行下拉 .se-filter-action', styleState.rowSelect],
@@ -1527,10 +1551,15 @@ const firstFamily = (el) =>
 
 const stylesOk =
   styleState.ownStyleSheet &&
-  // 原站样式表必须全部关掉
-  styleState.enabledForeign === 0 &&
+  // 原站（含第三方）样式表一个都不许被禁用
+  styleState.disabledForeign === 0 &&
   styleState.totalForeign > 0 &&
-  // 三种输入控件都要吃我们自己的配色（这正是用户报的两个问题）
+  // 必应选中浮窗应被隐去（页面上尚未创建时不算失败）
+  (styleState.qsBox === null || styleState.qsBox === 'none') &&
+  // 浮层必须挂在 #se-root 内（挂 body 会被必应的守卫生吞）
+  styleState.overlayHost === 'se-root' &&
+  // 三种输入控件都要吃我们自己的配色 —— 这是在「不禁用别人的 CSS」
+  // 前提下仍然成立的保证，靠我们自己的 !important 兜底
   usesOwnPalette(styleState.domainInput) &&
   usesOwnPalette(styleState.rowSelect) &&
   usesOwnPalette(styleState.addSelect) &&
@@ -1538,7 +1567,7 @@ const stylesOk =
   /Helvetica/i.test(firstFamily(styleState.rowSelect)) &&
   /Helvetica/i.test(firstFamily(styleState.addSelect));
 
-console.log(stylesOk ? '  ✅ 样式隔离与配色正确' : '  ❌ 样式隔离或配色不符预期');
+console.log(stylesOk ? '  ✅ 样式共存与控件配色正确' : '  ❌ 样式共存或配色不符预期');
 
 const filterOk = panelOk && badgeOk && hideOk && revealOk && parityOk && persistOk && stylesOk;
 console.log(filterOk ? '✅ 结果过滤整体通过' : '❌ 结果过滤存在失败项');

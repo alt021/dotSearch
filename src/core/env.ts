@@ -32,9 +32,6 @@ export const log = {
  */
 const pendingStyles = new Map<string, string>();
 
-/** 最近一次注入的 CSS，供 reassertOwnStyle 在必要时重建 */
-let lastStyleCss: string | null = null;
-
 /**
  * 注入样式（幂等，重复调用不会叠加 <style>）。
  *
@@ -52,7 +49,6 @@ let lastStyleCss: string | null = null;
  * 都没有就挂起，等 documentElement 出现再补插。
  */
 export function injectStyle(css: string, id: string = STYLE_ID): void {
-  lastStyleCss = css;
   if (document.getElementById(id) || pendingStyles.has(id)) return;
   if (typeof GM_addStyle === 'function') {
     try {
@@ -84,30 +80,4 @@ export function injectStyle(css: string, id: string = STYLE_ID): void {
   });
   // 观察 document 本身而不是 documentElement —— 后者此刻还是 null
   observer.observe(document, { childList: true, subtree: true });
-}
-
-/**
- * 确保我们自己的样式表仍然生效。
- *
- * 供「关掉原站样式表」之后调用。清理逻辑是按 id 排除自家样式表的，
- * 而**真实 Tampermonkey 的 GM_addStyle 不会给 <style> 带 id** ——
- * 于是那一份会被当成原站样式一并禁用，页面直接变成无样式。
- * （实测必应的 CSP 只限制 script-src，没有 style-src，
- *   所以自己建 <style> 完全可行，也就不必迁就 GM_addStyle 的实现细节。）
- *
- * 判据：能找到带 id 的、且未被禁用的样式表就什么都不做；
- * 否则重建一份。
- */
-export function reassertOwnStyle(): void {
-  if (!lastStyleCss) return;
-  // getElementById 给的是 HTMLElement，而这个 id 只可能是我们自己插的 <style>
-  const existing = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
-  if (existing && !existing.disabled) return;
-  existing?.remove();
-
-  const el = document.createElement('style');
-  el.id = STYLE_ID;
-  el.textContent = lastStyleCss;
-  const host = document.head ?? document.documentElement;
-  if (host) host.appendChild(el);
 }

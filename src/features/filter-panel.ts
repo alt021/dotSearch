@@ -14,6 +14,12 @@
  *    仅改动一条 DOM 反而更容易不一致。
  */
 import { getRules, setRules, normalizeDomain, type FilterAction, type FilterRule } from './filter-store.js';
+/*
+ * 复用重写模块的根容器 id（'se-root'），不另抄一份字符串 ——
+ * 浮层的挂载位置依赖它，两边必须始终一致。
+ * strip-to-results 不反向依赖本模块，无循环。
+ */
+import { ROOT_ID } from './strip-to-results.js';
 
 /** 设置浮层的根元素类名 */
 export const FILTER_PANEL_CLASS = 'se-filter-panel';
@@ -149,7 +155,24 @@ export function openFilterPanel(onApply: () => void): void {
 
   panel.append(head, rows, addWrap);
   overlay.appendChild(panel);
-  document.body.appendChild(overlay);
+
+  /*
+   * 挂到**我们自己的根容器**里，而不是 document.body。
+   *
+   * 国际版（www.bing.com）上必应自带一个 MutationObserver，
+   * 会把 body 下它不认识的子节点直接摘掉 —— 实测浮层挂到 body 后
+   * 几毫秒内就被删除：面板「打开又消失」，连关闭回调都没触发过，
+   * 用户看到的就是「过滤面板打不开」。
+   * （国内版没有这个守卫，所以本地在 cn 上测一直是通的。）
+   *
+   * 挂进 #se-root 就绕开了那层守卫 —— 必应对自己的根容器不设防。
+   * 浮层是 position:fixed，#se-root 上没有 transform / filter / contain
+   * 之类的属性，因此固定定位仍然相对视口，表现不变。
+   *
+   * 兜底：万一根容器不在（理论上不该发生），退回 body。
+   */
+  const host = document.getElementById(ROOT_ID) ?? document.body;
+  host.appendChild(overlay);
 
   render();
 

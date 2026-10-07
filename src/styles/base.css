@@ -80,37 +80,58 @@ body.se-stripped {
   max-width: 62rem;
   margin: 0 auto;
   padding: 3.5rem 2rem 6rem;
-  /*
-   * 抬高到几乎一切之上。
-   *
-   * 重写之后必应仍会往 body 里插自己的浮层 —— 实测最典型的是
-   * `div.overlay-dimmer`：position:fixed、z-index:9998、pointer-events:auto、
-   * 铺满整个视口。它平时靠 <b>必应自己样式表</b>里的 .b_hide 规则才 display:none，
-   * 而那份样式表已被我们禁用，于是它就成了一个全屏点击拦截层。
-   *
-   * 下面那条 display:none 规则是主要防线；这里再给根容器一个高 z-index，
-   * 即使还有别的浮层以嵌套形式冒出来，也压不到我们上面、抢不走命中测试。
-   * 数值比过滤浮层低一档，免得盖住浮层。
-   */
-  position: relative;
-  z-index: 2147483000;
 }
 
 /*
- * 重建后 body 里只应有本脚本的内容。
+ * 隐藏必应的「外壳」：顶栏、页脚、侧栏、广告位、遮罩。
  *
- * `#se-source` 例外：它是原站 DOM 的隐藏容器，另有自己的隐藏方式
- * （见下方说明，刻意不用 display:none 以配合自动翻页脚本）。
- * 过滤浮层同样例外，它本来就要铺满视口。
+ * 重写时原站 DOM 已被整体搬进 `#se-source`（1px 裁剪容器），本来看不见。
+ * 但必应的脚本在重写之后仍会跑，并把自己的一些外壳**重新插回 body** ——
+ * 实测页脚（`footer#b_footer` 及其内的 `#b_footerItems`、备案链接）会被重新插入
+ * 并正常显示在重写后的页面底部。
  *
- * 这条规则针对的是必应塞进 body 的「零件」：脚本、隐藏 input、
- * 建议框容器、SSO iframe，以及各类浮层与遮罩。
- * 它们的可见性原本由必应自己的 CSS 决定 —— 那份 CSS 被禁用后，
- * 本该隐藏的元素会直接显形。overlay-dimmer 就是因此变成一个
- * 全屏遮罩，把整页的点击都吃掉：**这是用户报的「点什么都没反应」的直接原因。**
- * 所以这里必须显式中和，不能只靠禁用原站 CSS。
+ * 之所以是「逐个 id 列出」而不是「隐藏 body 下所有外来元素」：
+ * 后者会连**东方永页机**的侧边浮动工具条一起隐藏掉 ——
+ * 它也是第三方脚本插到 body 上的 UI，必须留着。
+ *
+ * ⚠️ 清单里**绝不能**出现 `#b_results` / `#b_content` / `.b_pag` ——
+ * 东方永页机要靠它们定位「主内容容器」与「下一页链接」，
+ * 藏掉就等于废掉自动翻页。`#b_context` 可以藏：直答区是把它内部的
+ * `.b_ans` 节点搬进我们自己的列表，不依赖这个容器可见。
+ *
+ * 这份清单按实测的必应结构整理，改版后若有新的外壳需要补进来，加在这里。
  */
-body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
+#b_header,
+#b_footer,
+#b_pole,
+#b_context,
+#b_ads,
+#b_TriviaOverlay,
+.overlay-dimmer,
+body.se-stripped > footer,
+body.se-stripped > header {
+  display: none !important;
+}
+
+/*
+ * 隐藏必应的「选中文字」快捷搜索浮窗。
+ *
+ * 选中页面文字时必应会弹出一条「搜索 / 复制 / 地图 / Copilot」小浮层。
+ * 它是给**原站**结果用的交互，在重写后的页面上既多余又突兀，应当隐去。
+ *
+ * 这些 id 来自必应按需加载的 QuickSearch 样式表
+ * （r.bing.com/rp/UFVfAE_erDWnmiQS0T0UDoL3UwQ.css），是它的完整元素清单：
+ *   #qs_searchBoxOuter 外层容器（挂到 body 上）
+ *   #qs_searchBox / #qs_copyBox / #qs_mapBox / #qs_chatBox  四个按钮
+ * 隐藏外层容器即可，但按钮一并写上，免得样式表改版后容器换名。
+ *
+ * 同样刻意按 id 精确命中，不波及第三方 UI。
+ */
+#qs_searchBoxOuter,
+#qs_searchBox,
+#qs_copyBox,
+#qs_mapBox,
+#qs_chatBox {
   display: none !important;
 }
 
@@ -857,6 +878,19 @@ body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
  * 已有规则行用 `.se-filter-action`（见 filter-panel.ts 的 buildRow）。
  * 早期版本只写了前者，于是已有规则的下拉框完全没有自定义样式 ——
  * 暗色模式下表现为一块原生白底、字体还是 Arial。
+ *
+ * ## 为什么这里用 !important
+ *
+ * 必应对 `input` 也有自己的样式规则，而且比我们的类选择器更具体
+ * （实测把面板输入框染成 #444 文字配 #ddd 边框）。
+ * 曾经的做法是「把必应样式表整体禁用」，但那会连带关掉**别的脚本**的样式
+ * （东方永页机的侧边工具条因此完全走样），并让只靠原站 CSS 隐藏的浮层
+ * 全部显形。所以改为在这里用 !important 兜底：
+ * 只写自己的类名，绝不会波及页面上的其它任何元素。
+ *
+ * ⚠️ 用 !important 就意味着**各状态也必须一并 !important**，
+ * 否则下面的 :focus / :hover / 错误态会被这里的声明压死、完全失效。
+ * 这正是本文件里这几段都带 !important 的原因，改动时不要漏。
  */
 .se-filter-input,
 .se-filter-domain,
@@ -866,10 +900,10 @@ body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
   padding: 0.4rem 0.5rem;
   font: inherit;
   font-size: 0.8125rem;
-  color: var(--se-fg);
-  background: var(--se-bg);
-  border: 1px solid var(--se-line);
-  border-radius: 0;
+  color: var(--se-fg) !important;
+  background-color: var(--se-bg) !important;
+  border: 1px solid var(--se-line) !important;
+  border-radius: 0 !important;
 }
 
 /*
@@ -879,8 +913,8 @@ body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
  */
 .se-filter-input::placeholder,
 .se-filter-domain::placeholder {
-  color: var(--se-placeholder);
-  opacity: 1;
+  color: var(--se-placeholder) !important;
+  opacity: 1 !important;
 }
 
 /*
@@ -892,13 +926,14 @@ body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
 .se-filter-domain:focus,
 .se-filter-select:focus,
 .se-filter-action:focus {
-  outline: 2px solid var(--se-accent);
-  outline-offset: -1px;
+  outline: 2px solid var(--se-accent) !important;
+  outline-offset: -1px !important;
 }
 
 /* 输入不合法时给出可见反馈，而不是静默吞掉 */
+/* 与上面同理：基础规则用了 !important，这里也必须跟上，否则红框出不来 */
 .se-filter-input-invalid {
-  border-color: var(--se-accent);
+  border-color: var(--se-accent) !important;
 }
 
 .se-filter-add {
@@ -913,22 +948,24 @@ body.se-stripped > :not(#se-root):not(#se-source):not(.se-filter-overlay) {
   margin-top: 1.5rem;
 }
 
+/* 描边按钮：透明底 + 前景色描边，同样需要 !important 兜底（理由见上） */
 .se-filter-add-btn,
 .se-filter-remove {
   padding: 0.4rem 0.75rem;
   font: inherit;
   font-size: 0.8125rem;
-  color: var(--se-fg);
-  background: transparent;
-  border: 1px solid var(--se-fg);
-  border-radius: 0;
+  color: var(--se-fg) !important;
+  background-color: transparent !important;
+  border: 1px solid var(--se-fg) !important;
+  border-radius: 0 !important;
   cursor: pointer;
 }
 
+/* hover 必须也是 !important，否则上面的声明会把它压死、悬停毫无反馈 */
 .se-filter-add-btn:hover,
 .se-filter-remove:hover {
-  color: var(--se-bg);
-  background: var(--se-fg);
+  color: var(--se-bg) !important;
+  background-color: var(--se-fg) !important;
 }
 
 /* 窄屏：三种控件改为纵向堆叠，避免每格窄到不可用 */

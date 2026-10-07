@@ -117,14 +117,35 @@ for (const c of CASES) {
   pageErrors = [];
   navs = [];
 
-  await page.goto(c.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+  /*
+   * 打开页面，容忍网络抖动。
+   *
+   * 经代理访问必应时偶发 `net::ERR_ABORTED`（代理侧断连或必应主动中止），
+   * 属于环境噪声而非被测功能的问题 —— 重试一次即可，别让它把整个用例判死。
+   */
+  let navigated = false;
+  for (let attempt = 1; attempt <= 2 && !navigated; attempt++) {
+    try {
+      await page.goto(c.url, { waitUntil: 'domcontentloaded', timeout: 45_000 });
+      navigated = true;
+    } catch (err) {
+      if (attempt === 2) {
+        failures++;
+        console.log(`❌ ${c.label}  打开页面失败（网络/代理）：${String(err).slice(0, 90)}`);
+      }
+    }
+  }
+  if (!navigated) continue;
+
   await page.waitForSelector('li.b_algo', { timeout: 20_000 }).catch(() => {});
 
   // 注入前先记录原站状态，用于对照
-  const src = await page.evaluate(() => ({
-    bPag: document.querySelectorAll('.b_pag').length,
-    bAlgo: document.querySelectorAll('li.b_algo').length,
-  }));
+  const src = await page
+    .evaluate(() => ({
+      bPag: document.querySelectorAll('.b_pag').length,
+      bAlgo: document.querySelectorAll('li.b_algo').length,
+    }))
+    .catch(() => ({ bPag: 0, bAlgo: 0 }));
 
   // 页面未出结果时给出明确结论，避免后面一堆断言失败把人引向错误方向
   if (src.bAlgo === 0) {
@@ -165,11 +186,20 @@ for (const c of CASES) {
       .then(() => true)
       .catch(() => false);
 
+  /*
+   * 读状态。**必须容忍导航**：必应国际版在加载完成后还会做一次
+   * `rdr=1` 重定向，此刻 evaluate 会抛
+   * 「Execution context was destroyed」。
+   * 这是测试替身遇到的正常现象（真实 Tampermonkey 会在新文档上自动重注入），
+   * 不该让整个用例崩掉 —— 返回 null 让调用方跳过这一轮即可。
+   */
   const state = () =>
-    page.evaluate(() => ({
-      root: Boolean(document.getElementById('se-root')),
-      marked: Boolean(document.__searchEnhanceBing__),
-    }));
+    page
+      .evaluate(() => ({
+        root: Boolean(document.getElementById('se-root')),
+        marked: Boolean(document.__searchEnhanceBing__),
+      }))
+      .catch(() => null);
 
   /*
    * 注入并确认产出，最多 3 轮。
@@ -188,38 +218,50 @@ for (const c of CASES) {
   let rooted = false;
   let injectCount = 0;
   /*
-   * document-start 模式下重试没有意义：注入挂在上下文上，
-   * 只在**新文档**产生时才会跑；当前文档失败后不会再自己跑一遍。
-   * 因此只等一轮，让脚本有足够时间完成异步的「等结果容器」。
+   * 轮询等根容器出现，**容忍中途导航**。
+   *
+   * 必应国际版加载完后还会做一次 `rdr=1` 重定向：重写好的 DOM 随旧文档消失，
+   * 而新文档会因为 addInitScript（document-start 模式）自动再跑一遍脚本。
+   * 所以这里不能「只等一轮」，要一直等到出现或超时。
+   *
+   * post-load 模式没有自动重注入，只能靠我们自己补：
+   *   标记不在 → 当前文档从未被注入 → 再注入一次
+   *   标记在、根容器不在 → 脚本跑过却没产出，再注入会撞上
+   *     「已注入则跳过」的保护，继续等没有意义 → 退出
    */
-  const maxRounds = documentStart ? 1 : 3;
-  for (let round = 0; round < maxRounds; round++) {
-    const st = await state();
-    if (st.root) {
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const st = await state(); // 导航中返回 null，跳过本轮即可
+    if (st?.root) {
       rooted = true;
       break;
     }
-    // post-load 模式：标记在但无根容器，说明脚本跑过却没产出，再注入会被跳过
-    if (!documentStart && st.marked) break;
+    if (!documentStart) {
+      if (st?.marked) break;
+      await inject();
+      injectCount++;
+    }
 
-    await inject();
-    if (!documentStart) injectCount++;
     await waitRoot();
-
     // 稳定一小段再确认：期间若发生导航，重写好的 DOM 会随文档一起消失。
     // 这一段同时充当菜单、永页机桥接所需的稳定时间。
-    await page.waitForTimeout(1000);
-    rooted = (await state()).root;
+    await page.waitForTimeout(500);
+    if ((await state())?.root) {
+      rooted = true;
+      break;
+    }
   }
 
   // 仍未产出时打印现场，便于分辨是环境问题还是功能问题
   if (!rooted) {
-    const probe = await page.evaluate(() => ({
-      href: location.href,
-      readyState: document.readyState,
-      marked: Boolean(document.__searchEnhanceBing__),
-      hasAlgo: document.querySelectorAll('li.b_algo').length,
-    }));
+    const probe = await page
+      .evaluate(() => ({
+        href: location.href,
+        readyState: document.readyState,
+        marked: Boolean(document.__searchEnhanceBing__),
+        hasAlgo: document.querySelectorAll('li.b_algo').length,
+      }))
+      .catch(() => ({ href: '(导航中/取不到)' }));
     console.log(`   [未产出] ${JSON.stringify(probe)} 注入次数=${injectCount}`);
   } else if (injectCount > 1) {
     // 如实报告兜底被触发过，避免把「环境导致的重注入」看成一次干净通过
@@ -227,9 +269,15 @@ for (const c of CASES) {
     for (const u of navs) console.log(`     → ${u}`);
   }
 
-  const out = await page.evaluate(() => ({
-    pagRendered: document.querySelectorAll('.se-pagination .se-page').length,
-    rootExists: Boolean(document.getElementById('se-root')),
+  /*
+   * 采集重写后的现场。同样容忍导航：若此刻页面正在换文档，
+   * 说明重写结果已随旧文档消失，本轮判失败并继续下一个用例，
+   * 而不是让整个脚本崩掉。
+   */
+  const out = await page
+    .evaluate(() => ({
+      pagRendered: document.querySelectorAll('.se-pagination .se-page').length,
+      rootExists: Boolean(document.getElementById('se-root')),
     resultCount: document.querySelectorAll('.se-item').length,
     currentTag: (document.querySelector('.se-page-current') || {}).tagName || null,
     menu: (() => {
@@ -309,7 +357,14 @@ for (const c of CASES) {
       }
       return tally;
     })(),
-  }));
+    }))
+    .catch(() => null);
+
+  if (!out) {
+    failures++;
+    console.log(`❌ ${c.label}  采集现场时页面正在导航，本轮作废（多为 rdr=1 重定向）`);
+    continue;
+  }
 
   // 相关搜索不应出现在重写后的页面里
   const extraClean =
