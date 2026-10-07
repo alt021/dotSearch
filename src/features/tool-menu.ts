@@ -33,10 +33,24 @@ export const FILTER_ENTRY_CLASS = 'se-menu-filter';
 /** 弹出面板 id，供 aria-controls 引用 */
 const POPUP_ID = 'se-menu-popup';
 
-/** 未登录时的登录入口（实测会落到 login.live.com 的登录页） */
-const SIGN_IN_URL =
-  'https://www.bing.com/fd/auth/signin?action=interactive' +
-  '&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F';
+/*
+ * 站内入口一律**跟随当前站点**，不写死 www.bing.com。
+ *
+ * 必应有多个等价入口（www / cn / www2 / www4 …），
+ * 而用户改用备用域名，往往正是因为 www 那一侧访问不了 ——
+ * 写死就会把这类用户又弹回一个打不开的域名上去。
+ *
+ * 实测这些路径在 www / cn / www2 / www4 上都存在：
+ *   /fd/auth/signin    302 到各自的 /v2 变体，再转 login.live.com
+ *   /account/general   直接 200，各自语言设置页
+ */
+function signInUrl(): string {
+  const here = location.origin;
+  return (
+    `${here}/fd/auth/signin?action=interactive` +
+    `&provider=windows_live_id&return_url=${encodeURIComponent(`${here}/`)}`
+  );
+}
 
 /** 已登录时的去向：微软账户官网 */
 const MICROSOFT_ACCOUNT_URL = 'https://account.microsoft.com/';
@@ -47,14 +61,18 @@ interface MenuEntry {
 }
 
 /**
- * 固定条目的地址均已实测验证（会正确落到 Bing 自家页面）：
- *   - Rewards → rewards.bing.com/dashboard，未登录时转登录页
- *   - 设置   → bing.com/account/general，页面标题「搜索 - 设置」
+ * 固定条目。
+ *
+ * Rewards 保持绝对地址：它在**另一个**子域上（rewards.bing.com），
+ * 不是当前站点的路径，不能跟着 origin 走。
+ * 「搜索设置」则相反 —— 四个入口各有自己的设置页，应该留在当前站点。
  */
-const FIXED_ENTRIES: MenuEntry[] = [
-  { label: 'Microsoft Rewards', href: 'https://rewards.bing.com/dashboard' },
-  { label: '搜索设置', href: 'https://www.bing.com/account/general' },
-];
+function fixedEntries(): MenuEntry[] {
+  return [
+    { label: 'Microsoft Rewards', href: 'https://rewards.bing.com/dashboard' },
+    { label: '搜索设置', href: `${location.origin}/account/general` },
+  ];
+}
 
 /**
  * 生成账户条目。
@@ -73,7 +91,7 @@ function buildAccountEntry(): MenuEntry {
       href: MICROSOFT_ACCOUNT_URL,
     };
   }
-  return { label: '点击登录 Bing', href: SIGN_IN_URL };
+  return { label: '点击登录 Bing', href: signInUrl() };
 }
 
 /** 当前挂载的清理函数 */
@@ -144,7 +162,7 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
    */
   nav.appendChild(buildFilterEntry());
 
-  for (const entry of [buildAccountEntry(), ...FIXED_ENTRIES]) {
+  for (const entry of [buildAccountEntry(), ...fixedEntries()]) {
     const a = document.createElement('a');
     a.className = 'se-menu-link';
     a.href = entry.href;

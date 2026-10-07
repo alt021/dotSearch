@@ -1,7 +1,30 @@
 import type { EngineAdapter } from '../types/engine.js';
 import { text } from '../core/dom.js';
 
-const HOSTS = ['www.bing.com', 'cn.bing.com', 'bing.com'];
+/*
+ * 必应的搜索前端。
+ *
+ * 必应有多个**等价**入口：www / cn / www2 / www4 …
+ * 并且它按 IP 分流 —— 同一个域名在不同网络下给出中国版或全球版，
+ * 备用子域本身也随可用性增删。
+ *
+ * 所以这里用**后缀判定**而不是白名单：
+ * 白名单天生追不上必应增删别名，www4 就是这么漏掉的
+ * （漏掉的后果不是「功能降级」，而是脚本静默退出、整个增强都不生效）。
+ *
+ * 实测（2026-10，桌面版）：
+ *   www2 / www4        可直接作为搜索入口，DOM 与 www 一致
+ *   www3 / www5 / www6 302 回 cn.bing.com 首页，构不成入口
+ *   m / global         跳回 cn.bing.com/search
+ *
+ * 理论上的例外是移动站（`m.` 前缀）：那套 DOM 完全不同。
+ * 但即使误判也没有破坏性 —— 找不到结果容器时重写会直接退出，
+ * 不触碰页面（见 strip-to-results 里的容器判空）。
+ */
+function isBingHost(hostname: string): boolean {
+  return hostname === 'bing.com' || hostname.endsWith('.bing.com');
+}
+
 const INJECT_FLAG = '__searchEnhanceBing__';
 
 /**
@@ -25,14 +48,18 @@ const INJECT_FLAG = '__searchEnhanceBing__';
 export const bing: EngineAdapter = {
   id: 'bing',
   name: 'Bing',
-  hostnames: HOSTS,
+  /*
+   * 仅供日志与调试查看，**不求穷举** ——
+   * 识别一律走 isBingHost 的后缀判定，新增备用子域不必改这里。
+   */
+  hostnames: ['www.bing.com', 'cn.bing.com', 'www2.bing.com', 'www4.bing.com', 'bing.com'],
 
   resultContainerSelector: '#b_results',
   resultItemSelector: 'li.b_algo',
   searchForm: { path: '/search', param: 'q' },
 
   isSearchPage(url) {
-    return HOSTS.includes(url.hostname) && url.pathname === '/search';
+    return isBingHost(url.hostname) && url.pathname === '/search';
   },
 
   parseQuery(url) {

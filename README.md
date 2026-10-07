@@ -5,7 +5,10 @@
 不是给原站打补丁，而是把结果页整个换掉：用统一结构重建结果列表，
 再在此之上做完整的视觉风格化。
 
-- **当前主力引擎**：Bing（`www.bing.com` / `cn.bing.com` 搜索结果页）
+- **当前主力引擎**：Bing。搜索前端有多个**等价**入口：
+  `www` / `cn` / `www2` / `www4` …（必应按 IP 分流，同一个域名在不同
+  网络下给出中国版或全球版；备用子域也随可用性增删）。
+  脚本用 `*.bing.com` 通配注入，站点识别走**后缀判定**，新增别名无需改代码。
 - **预留扩展**：Google、百度（适配器已写好骨架，尚未接入调度）
 - **构建**：TypeScript → esbuild → 单个 `dist/search-enhance.user.js`
 
@@ -242,6 +245,16 @@ scripts/
 | `extractResults` | 提取标题、链接、摘要 |
 | `isAlreadyInjected` / `markInjected` | 防止 SPA 重复注入 |
 
+必应的 `isSearchPage` 用**后缀判定**（`bing.com` 及其任意子域 + `/search`），
+而不是主机名白名单。它的搜索前端有 www / cn / www2 / www4 等多个等价入口，
+备用子域还随可用性增删 —— 白名单天生追不上，而**漏掉一个的后果不是
+「功能降级」，是脚本静默退出、整个增强都不生效**（www4 就这么漏过一轮）。
+`hostnames` 字段仅供日志与调试查看，不求穷举，新增别名无需改代码。
+
+同理，菜单里指向站内的入口（登录、搜索设置）取 `location.origin` 而非
+写死 `www.bing.com`：用户改用备用域名，往往正是因为 www 那一侧访问不了，
+写死就把人弹回打不开的域名。Rewards 例外 —— 它在另一个子域上。
+
 ### 功能模块（`Feature`）
 
 一个功能只描述「做什么」，不关心在哪个引擎上做。三个方法：
@@ -417,6 +430,7 @@ npm run verify:dark             # 离线快照，深色
 npm run verify:live             # 实时站点，5 个查询词（需联网）
 npm run verify:start            # 实时站点，按 document-start 注入
 npm run verify:intl             # 实时站点，走代理打国际版（www.bing.com）
+npm run verify:www4             # 实时站点，打备用入口 www4.bing.com（走代理）
 npm run sample                  # 重新抓取离线快照
 ```
 
@@ -424,7 +438,7 @@ npm run sample                  # 重新抓取离线快照
 `verify:live` 连真实 Bing 跑多个查询词，用来发现线上结构变化。
 两者互补。
 
-**两个实时模式值得单独说明**，它们各自覆盖一类真实故障：
+**三个实时模式/开关值得单独说明**，它们各自覆盖一类真实故障：
 
 - `--document-start` —— 用 `addInitScript` 注入，精确模拟 Tampermonkey 的
   `@run-at document-start`（脚本早于文档树执行）。必须跑这个模式：
@@ -434,6 +448,11 @@ npm run sample                  # 重新抓取离线快照
   经本机 7897 代理落到 `www.bing.com`（国际版）。
   国际版会多做一次 `rdr=1` 重定向，时序与国内版不同，历史上出过
   启动即崩、整个增强功能无反应的故障，因此国际版也要单独跑。
+- `--host=<域名>` —— 换搜索入口，默认 `www.bing.com`。
+  **测备用子域必须用这个开关**：默认的 www 测不出站点识别逻辑的漏洞，
+  而 www4 当初正是因为识别白名单里没有它，导致脚本静默退出、
+  整个增强都不生效。每个入口各用一份独立的配置目录，
+  免得 Cookie 互相干扰地区判定。
 
 两个开关可以叠加（`npm run verify:intl` 就是「国际版 + document-start」）。
 

@@ -415,6 +415,7 @@ await page.context().unroute('**');
    ========================================================================== */
 const menuState = async () =>
   page.evaluate(() => {
+    const origin_ = location.origin;
     const btn = document.querySelector('.se-menu-btn');
     const popup = document.getElementById('se-menu-popup');
     if (!btn || !popup) return { exists: false };
@@ -460,6 +461,24 @@ const menuState = async () =>
         target: a.getAttribute('target') ?? '',
         rel: a.getAttribute('rel') ?? '',
       })),
+      /*
+       * 站内入口必须**跟随当前站点**，不能写死 www.bing.com。
+       *
+       * 必应有 www / cn / www2 / www4 多个等价入口，而用户改用备用域名
+       * 往往正是因为 www 那侧访问不了 —— 写死就把人弹回打不开的域名。
+       * 这个固件跑在 127.0.0.1 上，所以「以 location.origin 开头」
+       * 这条断言只有代码真的相对当前站点时才可能成立。
+       */
+      origin: origin_,
+      sameSiteLinks: links
+        .map((a) => a.getAttribute('href') ?? '')
+        .filter((h) => h.startsWith(origin_)),
+      crossSiteLinks: links
+        .filter((a) => {
+          const h = a.getAttribute('href');
+          return h && !h.startsWith(origin_);
+        })
+        .map((a) => (a.textContent ?? '').trim()),
     };
   });
 
@@ -739,6 +758,15 @@ const menuOk =
   menuOpen.links[0]?.label === '结果过滤设置' &&
   menuOpen.links[0]?.tag === 'BUTTON' &&
   menuOpen.links[0]?.href === null &&
+  /*
+   * 站内入口必须跟随当前站点。固件跑在 127.0.0.1 上，
+   * 所以「href 以 location.origin 开头」只有在代码真的没写死域名时才成立。
+   * 恰好两条站内链接（登录入口、搜索设置）；Rewards 在另一个子域上，
+   * 是唯一的外站链接，保持绝对地址。
+   */
+  menuOpen.sameSiteLinks.length === 2 &&
+  menuOpen.crossSiteLinks.length === 1 &&
+  menuOpen.crossSiteLinks[0] === 'Microsoft Rewards' &&
   menuOpen.links.slice(1).every(
     (l) =>
       l.tag === 'A' &&

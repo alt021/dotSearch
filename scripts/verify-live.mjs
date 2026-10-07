@@ -13,11 +13,18 @@
  *   node scripts/verify-live.mjs --document-start    直连，document-start 注入
  *   node scripts/verify-live.mjs --proxy             走 7897 代理（→ www.bing.com）
  *   node scripts/verify-live.mjs --proxy --document-start   国际版 + document-start
+ *   node scripts/verify-live.mjs --host=www4.bing.com --proxy --document-start
  *
  * 关于必应的 IP 分流：直连落到 cn.bing.com（中国版），
  * 经代理落到 www.bing.com（国际版）。两版的 DOM 与脚本时序不同，
  * 国际版会做一次 `rdr=1` 重定向，历史上正是在这里出过启动即崩的故障，
  * 所以两种入口都要跑。
+ *
+ * 关于 --host：必应有多个**等价**入口 —— www / cn / www2 / www4 …
+ * 它们都由 `*.bing.com` 通配注入脚本，但脚本自己还要认站点
+ * （engines/bing.ts 的 isBingHost）。默认的 www 测不出识别逻辑的漏洞，
+ * 换一个备用子域跑才是真正的验收 —— www4 当初就是因为白名单里没有它
+ * 而静默退出的。
  */
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -29,15 +36,18 @@ const bundle = readFileSync(join(root, 'dist/dev/search-enhance.user.js'), 'utf8
 // 去掉 UserScript 头部注释，只执行脚本主体（模拟 Tampermonkey 注入）
 const code = bundle.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/, '');
 
+/** 搜索入口主机名，改由 --host 指定（默认 www.bing.com） */
+const HOST = process.argv.find((a) => a.startsWith('--host='))?.slice('--host='.length) || 'www.bing.com';
+
 const CASES = [
-  { label: 'mozilla 第1页', url: 'https://www.bing.com/search?q=mozilla&setlang=zh-CN' },
+  { label: 'mozilla 第1页', url: `https://${HOST}/search?q=mozilla&setlang=zh-CN` },
   {
     label: '网络开发 第2页',
-    url: 'https://www.bing.com/search?q=%E7%BD%91%E7%BB%9C%E5%BC%80%E5%8F%91&setlang=zh-CN&first=11',
+    url: `https://${HOST}/search?q=%E7%BD%91%E7%BB%9C%E5%BC%80%E5%8F%91&setlang=zh-CN&first=11`,
   },
-  { label: '网络开发 第1页', url: 'https://www.bing.com/search?q=%E7%BD%91%E7%BB%9C%E5%BC%80%E5%8F%91&setlang=zh-CN' },
-  { label: 'test 第1页', url: 'https://www.bing.com/search?q=test&setlang=zh-CN' },
-  { label: 'rust 第1页', url: 'https://www.bing.com/search?q=rust&setlang=zh-CN' },
+  { label: '网络开发 第1页', url: `https://${HOST}/search?q=%E7%BD%91%E7%BB%9C%E5%BC%80%E5%8F%91&setlang=zh-CN` },
+  { label: 'test 第1页', url: `https://${HOST}/search?q=test&setlang=zh-CN` },
+  { label: 'rust 第1页', url: `https://${HOST}/search?q=rust&setlang=zh-CN` },
 ];
 
 /*
@@ -57,7 +67,17 @@ const CASES = [
 const useProxy = process.argv.includes('--proxy');
 const documentStart = process.argv.includes('--document-start');
 
-const context = await launchChromitePersistent(PROFILE_DIR, {
+/*
+ * 备用入口各用一份独立的配置目录。
+ *
+ * 同一个 profile 里带着 www 的 Cookie 去访问 www4，会干扰必应的
+ * 地区/语言判定；而持久化 profile 又是必须的（新访客会被 `rdr=1` 冲掉 DOM）。
+ * 默认的 www.bing.com 沿用原路径，免得丢掉已积累的 Cookie。
+ */
+const profileDir =
+  HOST === 'www.bing.com' ? PROFILE_DIR : join(PROFILE_DIR, HOST.replace(/\./g, '-'));
+
+const context = await launchChromitePersistent(profileDir, {
   locale: 'zh-CN',
   viewport: { width: 1280, height: 1000 },
   ...(useProxy ? { proxy: { server: 'http://127.0.0.1:7897' } } : {}),
@@ -100,7 +120,7 @@ if (documentStart) {
 }
 
 const mode = [
-  useProxy ? '代理 → www.bing.com' : '直连 → cn.bing.com',
+  useProxy ? `代理 → ${HOST}` : `直连 → ${HOST}`,
   documentStart ? 'document-start 注入' : 'post-load 注入',
 ].join('，');
 console.log(`模式：${mode}\n`);

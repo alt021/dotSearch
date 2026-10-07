@@ -29,10 +29,24 @@ export const GRANTS = ['GM_addStyle', 'GM_getValue', 'GM_setValue'] as const;
  * @match 规则 —— 已接入适配器的引擎。
  * Google / 百度未启用前保持在 MATCHES_FUTURE 中（构建时以注释输出），
  * 避免在没有适配器的情况下往这些站点注入脚本。
+ *
+ * ⚠️ 第一条通配已覆盖必应的**全部**搜索前端：
+ * www / cn / www2 / www4 …（以及以后新增的别名），
+ * 因此**新增备用子域在功能上不需要改这里**。
+ * 实测 www3 / www5 / www6 会 302 回 cn.bing.com 首页，构不成入口。
+ *
+ * 后两条相对通配是冗余的，保留是因为它们是**实际验收过、也希望用户用到**
+ * 的入口：写出来既方便阅读排查，也让「脚本会在哪些站点上跑」
+ * 在头部一目了然，不必去推导通配的语义。
+ *
+ * 真正决定「这个站点算不算必应搜索页」的是 engines/bing.ts 的
+ * isBingHost（后缀判定）—— 那才是曾漏掉 www4、导致脚本静默退出的地方；
+ * @match 只是**注入**门槛，两者缺一不可。
  */
 export const MATCHES_ACTIVE = [
   '// @match        *://*.bing.com/search*',
   '// @match        *://cn.bing.com/search*',
+  '// @match        *://www4.bing.com/search*',
 ];
 
 /** 待接入引擎的 @match 规则，启用时移到 MATCHES_ACTIVE */
