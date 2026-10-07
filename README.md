@@ -1,4 +1,4 @@
-# Search Enhance
+# dotSearch
 
 一个**重写搜索引擎结果页**的 [UserScript](https://www.tampermonkey.net/) 项目。
 
@@ -10,7 +10,7 @@
   网络下给出中国版或全球版；备用子域也随可用性增删）。
   脚本用 `*.bing.com` 通配注入，站点识别走**后缀判定**，新增别名无需改代码。
 - **预留扩展**：Google、百度（适配器已写好骨架，尚未接入调度）
-- **构建**：TypeScript → esbuild → 单个 `dist/search-enhance.user.js`
+- **构建**：TypeScript → esbuild → 单个 `dist/dotSearch.user.js`
 
 ---
 
@@ -29,8 +29,8 @@ npm run verify    # 类型检查 + 构建
 
 | 命令 | 产物 | 用途 |
 | --- | --- | --- |
-| `npm run build` | `dist/search-enhance.user.js` | 正式版，`@updateURL` 指向 GitHub raw |
-| `npm run watch` | `dist/dev/search-enhance.user.js` | 开发版，`@updateURL` 指向本机服务 |
+| `npm run build` | `dist/dotSearch.user.js` | 正式版，`@updateURL` 指向 GitHub raw |
+| `npm run watch` | `dist/dev/dotSearch.user.js` | 开发版，`@updateURL` 指向本机服务 |
 
 > **Windows 装依赖提示**：新版 npm 会拦截 esbuild 的 postinstall（`npm warn install-scripts`），
 > 二进制可能没落地。若 `npm run build` 报找不到 esbuild，用系统 Node 补跑一次：
@@ -54,7 +54,7 @@ npm run verify    # 类型检查 + 构建
 # 终端 1 —— 起服务
 npm run build:dev
 npm run serve
-# 输出：[serve] 安装地址：http://127.0.0.1:8777/search-enhance.user.js
+# 输出：[serve] 安装地址：http://127.0.0.1:8777/dotSearch.user.js
 
 # 终端 2 —— 监听重建（改完代码自动生效）
 npm run watch
@@ -62,7 +62,7 @@ npm run watch
 
 然后：
 
-1. 浏览器里打开 <http://127.0.0.1:8777/search-enhance.user.js>
+1. 浏览器里打开 <http://127.0.0.1:8777/dotSearch.user.js>
 2. Tampermonkey 会弹出安装页 → 点 **安装**
 3. 打开 <https://www.bing.com/search?q=test>，广告位应已隐藏
 
@@ -76,7 +76,7 @@ npm run watch
 
 1. 跑 `npm run build`
 2. Tampermonkey 图标 → **添加新脚本**（或新建空脚本后全选删除默认内容）
-3. 把 `dist/search-enhance.user.js` 全文粘贴进去
+3. 把 `dist/dotSearch.user.js` 全文粘贴进去
 4. `Ctrl+S` 保存
 
 缺点：每次改代码都要重新复制一遍。
@@ -84,14 +84,14 @@ npm run watch
 ### 方式 C：正式发布后自动更新
 
 `meta.ts` 里正式版的 `@updateURL` / `@downloadURL` 指向
-`raw.githubusercontent.com/alt021/search-enhance/main/dist/search-enhance.user.js`。
+`raw.githubusercontent.com/alt021/dotSearch/main/dist/dotSearch.user.js`。
 配好之后，Tampermonkey 会自动检查并升级，用户侧只需打开那个 URL 首次安装。
 
 > **注意**：仓库当前**不提交 `dist/`**（它属于生成物，见上表）。
 > 因此上面那个地址目前取不到文件，方式 C 要等下面任一件事做完才可用：
 >
 > - 加一个 CI（如 GitHub Actions）在推送时构建并发布产物；
-> - 或改主意把 `dist/search-enhance.user.js` 纳入版本控制；
+> - 或改主意把 `dist/dotSearch.user.js` 纳入版本控制；
 > - 或把构建产物挂到 Release，让 `@updateURL` 指向 Release 资产地址。
 
 ---
@@ -112,7 +112,7 @@ npm run watch
    对应条目应立即变为灰字占位，单击可正常恢复
 
 排查：在控制台执行 `window.__searchEnhanceDebug__ = true` 后刷新，
-即可看到 `[search-enhance]` 开头的 info 级日志；
+即可看到 `[dotSearch]` 开头的 info 级日志；
 关键诊断（如重写完成、分页缺失）一律以 `console.warn` 输出，无需开关即可见。
 
 ---
@@ -139,8 +139,8 @@ npm run watch
 ```json
 [
   {
-    "name": "必应 + 搜索体验增强",
-    "author": "search-enhance",
+    "name": "必应 + dotSearch",
+    "author": "dotSearch",
     "example": "https://www.bing.com/search?q=test",
     "url": "^https?://(www|cn)\\.bing\\.com/search",
     "nextLink": "#se-source .sb_pagN, #se-source .sb_pagNext, #se-source a[aria-label=\"下一页\"]",

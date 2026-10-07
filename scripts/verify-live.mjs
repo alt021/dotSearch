@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { PROFILE_DIR, launchChromitePersistent } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const bundle = readFileSync(join(root, 'dist/dev/search-enhance.user.js'), 'utf8');
+const bundle = readFileSync(join(root, 'dist/dev/dotSearch.user.js'), 'utf8');
 // 去掉 UserScript 头部注释，只执行脚本主体（模拟 Tampermonkey 注入）
 const code = bundle.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/, '');
 
@@ -134,7 +134,7 @@ page.on('console', (m) => {
   const text = m.text();
   // 真实站点上会有大量与本项目无关的报错（Bing 自身的埋点校验请求失败等），
   // 只留本脚本的诊断，否则真正的线索会被噪音淹没。
-  if (text.includes('[search-enhance]')) captured.push(text);
+  if (text.includes('[dotSearch]')) captured.push(text);
 });
 page.on('pageerror', (e) => pageErrors.push(String(e)));
 // 记录主框架的导航：实测 Bing 会在页面就绪后再次导航（如 www → cn 的站点跳转），

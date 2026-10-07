@@ -1,5 +1,5 @@
 /**
- * Search Enhance —— 入口
+ * dotSearch —— 入口
  *
  * 重写 Bing / Google / 百度 的搜索结果页。
  * 当前仅 Bing 已接入适配器，Google 与百度为预留扩展位。

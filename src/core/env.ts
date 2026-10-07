@@ -1,4 +1,4 @@
-const PREFIX = '[search-enhance]';
+const PREFIX = '[dotSearch]';
 const STYLE_ID = 'search-enhance-styles';
 
 /**

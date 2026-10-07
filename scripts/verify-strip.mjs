@@ -30,7 +30,7 @@ if (!existsSync(samplePath)) {
 }
 
 const html = readFileSync(samplePath, 'utf8');
-const bundle = readFileSync(join(root, 'dist/dev/search-enhance.user.js'), 'utf8');
+const bundle = readFileSync(join(root, 'dist/dev/dotSearch.user.js'), 'utf8');
 
 // ---- 用本地 http 服务提供样例页面，避免 about:blank 的 cookie 限制 ----
 const server = createServer((req, res) => {

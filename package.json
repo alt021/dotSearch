@@ -1,6 +1,6 @@
 {
-  "name": "search-enhance",
-  "version": "0.1.0",
+  "name": "dotsearch",
+  "version": "0.1.3",
   "description": "增强搜索引擎用户体验的 UserScript（当前以 Bing 为主，逐步扩展 Google / 百度）",
   "type": "module",
   "private": true,

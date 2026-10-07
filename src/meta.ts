@@ -59,13 +59,23 @@ export const MATCHES_FUTURE = [
 /** 本地开发服务地址，需与 scripts/serve.mjs 的端口一致 */
 export const DEV_SERVER = 'http://127.0.0.1:8777';
 
+/**
+ * 构建产物文件名。
+ *
+ * 单一来源：构建脚本、本机安装地址、正式下载地址都从这里取，
+ * 避免改名时漏掉某一处 —— 那会得到一条指向 404 的安装链接。
+ */
+export const ARTIFACT = 'dotSearch.user.js';
+
+/** 项目主页（GitHub 仓库），三处 URL 都由它派生 */
+const REPO = 'https://github.com/alt021/dotSearch';
+
 export const META = {
-  namespace: 'https://github.com/alt021/search-enhance',
-  homepage: 'https://github.com/alt021/search-enhance',
-  supportURL: 'https://github.com/alt021/search-enhance/issues',
+  namespace: REPO,
+  homepage: REPO,
+  supportURL: `${REPO}/issues`,
   /** 正式发布地址（推到 GitHub 后生效） */
-  downloadURL:
-    'https://raw.githubusercontent.com/alt021/search-enhance/main/dist/search-enhance.user.js',
+  downloadURL: `https://raw.githubusercontent.com/alt021/dotSearch/main/dist/${ARTIFACT}`,
   icon: 'https://www.bing.com/sa/simg/bing_p_rr_teal_min.ico',
   runAt: 'document-start',
   noframes: true,
@@ -88,8 +98,7 @@ export function buildMetaBlock(pkg: MetaOptions): string {
 
   return [
     '// ==UserScript==',
-    `// @name         Search Enhance${pkg.dev ? ' (Dev)' : ''}`,
-    '// @name:zh-CN   搜索体验增强' + (pkg.dev ? '（开发版）' : ''),
+    `// @name         dotSearch${pkg.dev ? ' (Dev)' : ''}`,
     `// @version      ${version}`,
     `// @description  ${pkg.description}`,
     '// @author       AmeXE2',
@@ -97,9 +106,9 @@ export function buildMetaBlock(pkg: MetaOptions): string {
     `// @homepageURL  ${META.homepage}`,
     `// @supportURL   ${META.supportURL}`,
     // 开发模式下以本机服务为准，避免 Tampermonkey 校验 404 的远端地址
-    `// @downloadURL  ${pkg.dev ? `${DEV_SERVER}/search-enhance.user.js` : META.downloadURL}`,
+    `// @downloadURL  ${pkg.dev ? `${DEV_SERVER}/${ARTIFACT}` : META.downloadURL}`,
     ...(pkg.dev
-      ? [`// @updateURL    ${DEV_SERVER}/search-enhance.user.js`]
+      ? [`// @updateURL    ${DEV_SERVER}/${ARTIFACT}`]
       : [`// @updateURL    ${META.downloadURL}`]),
     `// @icon         ${META.icon}`,
     ...MATCHES_ACTIVE,

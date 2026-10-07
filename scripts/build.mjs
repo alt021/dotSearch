@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 构建脚本：把 src/ 打包成单个可安装的 dist/search-enhance.user.js
+ * 构建脚本：把 src/ 打包成单个可安装的 dist/*.user.js
  *
  *   node scripts/build.mjs              正式构建
  *   node scripts/build.mjs --watch      监听重建
@@ -9,6 +9,9 @@
  *
  * 开发构建会输出到 dist/dev/，避免与正式产物混在一起，
  * 便于 Tampermonkey 同时保留「正式版」和「开发版」两个脚本。
+ *
+ * 产物文件名取自 src/meta.ts 的 ARTIFACT —— 同一份常量也用于
+ * 头部里的安装地址，两处不会不一致。
  */
 import * as esbuild from 'esbuild';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -22,11 +25,13 @@ const watch = process.argv.includes('--watch');
 const minify = process.argv.includes('--minify');
 const dev = process.argv.includes('--dev');
 
+const LOG = '[dotSearch]';
+
 /**
  * 动态读取 src/meta.ts 里的头部生成函数。
  * 单独编译到临时文件后 import，避免在 build.mjs 里重复维护元信息。
  */
-async function loadBuildMetaBlock() {
+async function loadMeta() {
   const tmpDir = join(root, '.build');
   await mkdir(tmpDir, { recursive: true });
   const tmpFile = join(tmpDir, 'meta.mjs');
@@ -40,18 +45,18 @@ async function loadBuildMetaBlock() {
     logLevel: 'silent',
   });
 
-  const mod = await import(pathToFileURL(tmpFile).href);
-  return mod.buildMetaBlock({
-    version: pkg.version,
-    description: pkg.description,
-    dev,
-  });
+  return import(pathToFileURL(tmpFile).href);
 }
 
-const banner = await loadBuildMetaBlock();
+const meta = await loadMeta();
+const banner = meta.buildMetaBlock({
+  version: pkg.version,
+  description: pkg.description,
+  dev,
+});
 
 const outDir = dev ? join(root, 'dist', 'dev') : join(root, 'dist');
-const outFile = join(outDir, 'search-enhance.user.js');
+const outFile = join(outDir, meta.ARTIFACT);
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
@@ -77,15 +82,15 @@ const relOut = outFile.slice(root.length + 1).replace(/\\/g, '/');
 if (watch) {
   const ctx = await esbuild.context(options);
   await ctx.watch();
-  console.log(`[search-enhance] 监听中，src/ 变更将自动重建 ${relOut}`);
+  console.log(`${LOG} 监听中，src/ 变更将自动重建 ${relOut}`);
   if (dev) {
-    console.log('[search-enhance] 开发模式：Tampermonkey 安装地址为 http://127.0.0.1:8777/search-enhance.user.js');
-    console.log('[search-enhance] 请另开一个终端运行 npm run serve');
+    console.log(`${LOG} 开发模式：Tampermonkey 安装地址为 http://127.0.0.1:8777/${meta.ARTIFACT}`);
+    console.log(`${LOG} 请另开一个终端运行 npm run serve`);
   }
 } else {
   const result = await esbuild.build({ ...options, metafile: true });
   const entry = result.metafile.outputs[relOut] ?? Object.values(result.metafile.outputs)[0];
   if (entry) {
-    console.log(`[search-enhance] 构建完成：${relOut}  ${(entry.bytes / 1024).toFixed(1)} KB`);
+    console.log(`${LOG} 构建完成：${relOut}  ${(entry.bytes / 1024).toFixed(1)} KB`);
   }
 }

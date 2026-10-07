@@ -25,7 +25,7 @@ const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
 mkdirSync(join(root, '.build'), { recursive: true });
 const html = readFileSync(join(root, '.build', 'bing-live.html'), 'utf8');
-const bundle = readFileSync(join(root, 'dist/dev/search-enhance.user.js'), 'utf8');
+const bundle = readFileSync(join(root, 'dist/dev/dotSearch.user.js'), 'utf8');
 const code = bundle.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/, '');
 
 const server = createServer((_q, r) => {

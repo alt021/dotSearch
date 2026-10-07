@@ -77,9 +77,24 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '127.0.0.1', async () => {
   const rel = serveDir.slice(root.length + 1).replace(/\\/g, '/');
   console.log(`[serve] 目录：${rel}`);
-  console.log(`[serve] 安装地址：http://127.0.0.1:${PORT}/search-enhance.user.js`);
+  /*
+   * 列出目录里真实的 .user.js，而不是把文件名写死在日志里。
+   * 产物名改过一次（search-enhance → dotSearch），写死就会照旧印出一个
+   * 404 的安装地址 —— 而且只有用户点了才会发现。
+   */
+  let bundles = [];
+  try {
+    bundles = (await readdir(serveDir)).filter((f) => f.endsWith('.user.js'));
+  } catch {
+    /* 目录尚不存在（还没构建过） */
+  }
+  if (bundles.length === 0) {
+    console.log('[serve] 该目录下暂无 .user.js，请先运行 npm run build:dev');
+  } else {
+    for (const f of bundles) console.log(`[serve] 安装地址：http://127.0.0.1:${PORT}/${f}`);
+  }
   console.log('[serve] 在 Tampermonkey 中打开该 URL 即可安装。按 Ctrl+C 停止。');
 });
