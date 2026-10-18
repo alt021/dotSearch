@@ -32,7 +32,8 @@ import { dirname, join } from 'node:path';
 import { PROFILE_DIR, launchChromitePersistent } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
-const bundle = readFileSync(join(root, 'dist/dev/dotSearch.user.js'), 'utf8');
+// 多产物拆分后的命名（dotSearch-bing.user.js）；本脚本只验证必应产物
+const bundle = readFileSync(join(root, 'dist/dev/dotSearch-bing.user.js'), 'utf8');
 // 去掉 UserScript 头部注释，只执行脚本主体（模拟 Tampermonkey 注入）
 const code = bundle.replace(/^\/\/ ==UserScript==[\s\S]*?\/\/ ==\/UserScript==\s*/, '');
 
@@ -318,7 +319,7 @@ for (const c of CASES) {
       const popup = document.getElementById('se-menu-popup');
       if (!btn || !popup) return { exists: false };
       const entries = [...popup.querySelectorAll('.se-menu-link')];
-      // 首个条目是本脚本自己的「结果过滤设置」，它是 <button> 而非 <a>
+      // 首个条目是本脚本自己的「附加设置」，它是 <button> 而非 <a>
       const first = entries[0];
       const rest = entries.slice(1);
       return {
@@ -327,9 +328,9 @@ for (const c of CASES) {
         sameRow: Boolean(btn.closest('.se-brand-row')),
         closedHidden: getComputedStyle(popup).display === 'none',
         linkCount: entries.length,
-        firstIsFilterButton:
+        firstIsSettingsButton:
           first?.tagName === 'BUTTON' &&
-          (first.textContent || '').trim() === '结果过滤设置' &&
+          (first.textContent || '').trim() === '附加设置' &&
           !first.hasAttribute('href'),
         // 其余三个是原站入口替代品：必须有 http 地址且新标签打开
         hrefsOk: rest.every(
@@ -412,9 +413,9 @@ for (const c of CASES) {
     out.menu.label === '菜单' &&
     out.menu.sameRow &&
     out.menu.closedHidden &&
-    // 4 项：结果过滤设置 + 账户 + Rewards + 搜索设置
+    // 4 项：附加设置 + 账户 + Rewards + 搜索设置
     out.menu.linkCount === 4 &&
-    out.menu.firstIsFilterButton &&
+    out.menu.firstIsSettingsButton &&
     out.menu.hrefsOk;
 
   // 标题锚点与整条锚点都必须有 href 且在新标签页打开
@@ -449,9 +450,15 @@ for (const c of CASES) {
     btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     const popup = document.getElementById('se-menu-popup');
     const menuOpen = popup ? !popup.hasAttribute('inert') : false;
-    const entry = document.querySelector('#se-menu-popup .se-menu-filter');
-    if (!entry) return { step: 'no-filter-entry', menuOpen };
+    const entry = document.querySelector('#se-menu-popup .se-menu-settings');
+    if (!entry) return { step: 'no-settings-entry', menuOpen };
     entry.click();
+    // 过滤设置收在附加设置弹窗里：先确认弹窗在，再点「进入」
+    const settingsEl = document.querySelector('.se-settings-panel');
+    if (!settingsEl) return { step: 'settings-not-opened', menuOpen };
+    const go = document.querySelector('.se-settings-goto');
+    if (!go) return { step: 'no-goto', menuOpen };
+    go.click();
     const panelEl = document.querySelector('.se-filter-panel');
     if (!panelEl) return { step: 'panel-not-opened', menuOpen };
     const rect = panelEl.getBoundingClientRect();
@@ -460,9 +467,16 @@ for (const c of CASES) {
       menuOpen,
       visible: rect.width > 0 && rect.height > 0,
       hasRows: !!document.querySelector('.se-filter-rows'),
+      // 顺带验证隐私开关也在这一层里（它是本次新增的功能）
+      hasPrivacySwitch: !!document.querySelector('.se-privacy-toggle'),
     };
   });
-  const panelOk = panel.step === 'opened' && panel.menuOpen && panel.visible && panel.hasRows;
+  const panelOk =
+    panel.step === 'opened' &&
+    panel.menuOpen &&
+    panel.visible &&
+    panel.hasRows &&
+    panel.hasPrivacySwitch;
 
   // 原站无分页时（结果不足一页）不算失败
   const ok =
@@ -487,7 +501,7 @@ for (const c of CASES) {
   console.log(
     `     菜单: ${out.menu.exists ? out.menu.label : '(缺失)'}` +
       ` 入口${out.menu.linkCount} 同行=${out.menu.sameRow} 收起隐藏=${out.menu.closedHidden}` +
-      ` 首项为过滤按钮=${out.menu.firstIsFilterButton}`,
+      ` 首项为附加设置=${out.menu.firstIsSettingsButton}`,
   );
   console.log(
     `     过滤面板: ${panel.step}` +

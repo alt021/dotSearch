@@ -464,6 +464,49 @@ body.se-stripped > header {
   border-color: var(--se-fg);
 }
 
+/*
+ * 分页的两套控件：页码列表（桌面）与上/下一页（窄屏）。
+ *
+ * 两套都渲染、由视口决定显示哪套 —— 而不是按视口重建 DOM，
+ * 这样旋转屏幕时不会打断阅读位置，也不会丢失链接状态。
+ * 各自的显示规则写在下面的 @media 里，这里只定义默认形态。
+ */
+.se-pagination-pages {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 1.25rem;
+}
+
+/* 桌面端不显示上/下一页；窄屏才启用（见文件末尾的窄屏规则） */
+.se-pagination-steps {
+  display: none;
+}
+
+/* 上/下一页的按钮形态：直角、描边，与页码同一套视觉语言 */
+.se-page-step {
+  padding: 0.4rem 0.9rem;
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
+  font-size: 0.875rem;
+  color: var(--se-fg);
+  text-decoration: none;
+  border: 1px solid var(--se-fg);
+}
+
+.se-page-step:hover {
+  color: var(--se-accent);
+  border-color: var(--se-accent);
+}
+
+/*
+ * 到头了（首页的「上一页」、末页的「下一页」）：
+ * 保留位置但不给强调，避免用户反复点一个不会动的控件。
+ */
+.se-page-step-off {
+  color: var(--se-muted);
+  border-color: var(--se-line);
+}
+
 /* ---- 其他 ---- */
 
 .se-empty {
@@ -480,29 +523,76 @@ body.se-stripped > header {
   border-bottom: 1px solid var(--se-line);
 }
 
-/* ---- 响应式：窄屏收起序号栏 ---- */
-
+/*
+ * ---- 窄屏：收紧两侧留白 + 内容顶格 + 分页只留前后页 ----
+ *
+ * 设计取向：这是一页杂志式排版，字号层级、列宽比例、间距节奏
+ * 都是版面语言的一部分，不该在手机上换成另一套结构。
+ *
+ * 但有两件事必须为窄屏让路，它们都不是「换版面」，而是
+ * 「把同一版面在更窄的纸面上重新对齐」：
+ *
+ *   1. **内容顶格**。桌面版左侧有一条 3.5rem 序号栏 + 1rem 间距，
+ *      内容整体右移 4.5rem。在手机上这一栏挤占的是正文宽度，
+ *      因此窄屏把两列并成一列、序号缩在正文上方 ——
+ *      标题与描述直接顶住左边缘，左侧不再留空。
+ *
+ *   2. **分页只留上/下一页**。页码列表在窄屏一行放不下，
+ *      换行后每个目标又小到难以点中；顺序阅读真正会用的
+ *      只有「上一页 / 下一页」两个动作。
+ *
+ * 垂直内边距（3.5rem 顶部 / 6rem 底部）保持不变：
+ * 那是页头呼吸感与分页尾距的一部分，与「两侧空余」无关。
+ */
 @media (max-width: 600px) {
   #se-root {
-    padding: 2rem 1.25rem 4rem;
+    padding-left: 0.875rem;
+    padding-right: 0.875rem;
   }
 
-  .se-query {
-    font-size: 1.875rem;
-  }
-
+  /*
+   * 两列并一列：序号成为正文上方的一行。
+   *
+   * 用 grid 的「单列 + 自动行」而不是删掉序号 ——
+   * 序号是「第几项」的版面标记，去掉会丢失信息。
+   */
   .se-item {
-    grid-template-columns: 2.25rem 1fr;
-    gap: 0 0.75rem;
+    grid-template-columns: 1fr;
+    gap: 0.35rem 0;
   }
 
-  .se-title {
-    font-size: 1.125rem;
+  /* 序号靠左独立成行；行高压紧，避免在正文上方吃掉一整行高度 */
+  .se-num {
+    line-height: 1.2;
   }
 
-  /* 标签与标题同比例收缩，保持两者的视觉比例关系不变 */
-  .se-tag {
-    font-size: 0.8125rem;
+  /* 分页：隐藏页码列表，显示上/下一页 */
+  .se-pagination-pages {
+    display: none;
+  }
+
+  .se-pagination-steps {
+    display: flex;
+    align-items: stretch;
+    gap: 0.75rem;
+    width: 100%;
+  }
+
+  /*
+   * 两个按钮平分整行。
+   *
+   * 为什么不用 auto 宽度：手机上「上一页」「下一页」若各自只包住文字，
+   * 可点区域会小很多，还容易点空。平分后每个约半屏宽，
+   * 恰好是拇指容易够到的两个位置。
+   * 指定 min-height 保证触控目标不小于常见的 36px 经验值。
+   */
+  .se-page-step {
+    flex: 1 1 0;
+    min-height: 2.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
   }
 }
 
@@ -982,5 +1072,368 @@ body.se-stripped > header {
 
   .se-filter-remove {
     justify-self: start;
+  }
+}
+
+/* ==========================================================================
+   附加设置弹窗
+   --------------------------------------------------------------------------
+   菜单第一项的落点：一个只有「行」的面板，每行左侧是名称、
+   右侧是控件（进入按钮 / 开关）。
+
+   视觉上刻意与结果过滤面板对齐 —— 同一个遮罩、同一种描边面板、
+   同样 3px 的页头规则线。两者是同一套设置体系的上下两级，
+   换层不应换语言。
+
+   拒绝：无圆角、无阴影、无渐变、无漂浮抬升。
+   开关也不用 iOS 那种胶囊，而是**方块滑块**：
+   圆角胶囊是移动端语汇，与这里的排印体系不搭。
+   ========================================================================== */
+
+/* 遮罩复用 .se-filter-overlay 的规则（见 settings-panel.ts 同时挂两个类），
+   这里只声明本弹窗自己的层级关系：它必须盖住菜单，但不改变 z-index 顺序 */
+.se-settings-overlay {
+  z-index: 2147483200;
+}
+
+.se-settings-panel {
+  width: 100%;
+  max-width: 30rem;
+  padding: 1.5rem;
+  background: var(--se-bg);
+  border: 1px solid var(--se-fg);
+}
+
+.se-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0.75rem;
+  /* 与页头同一种收束方式：3px 粗规则线，不用色块 */
+  border-bottom: 3px solid var(--se-rule);
+}
+
+.se-settings-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+/*
+ * 关闭键与过滤面板的 .se-filter-close 完全同构。
+ * 之所以不直接复用那个类：两个面板的生命周期独立，
+ * 共用类名会在改动其中一个时悄悄影响另一个。
+ */
+.se-settings-close {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  color: var(--se-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.se-settings-close:hover {
+  color: var(--se-accent);
+}
+
+.se-settings-close:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: 2px;
+}
+
+.se-settings-rows {
+  display: flex;
+  flex-direction: column;
+  margin-top: 0.5rem;
+}
+
+/*
+ * 一行设置：名称占满左侧，控件靠右。
+ * 行间用细规则线切分 —— 与结果过滤面板的规则行同一手法，
+ * 让两组设置看起来属于同一种排版体系。
+ */
+.se-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 0;
+  border-bottom: 1px solid var(--se-line);
+}
+
+.se-settings-label {
+  display: inline-block;
+  font-size: 0.875rem;
+  color: var(--se-fg);
+}
+
+/*
+ * 带说明文字的行：名称与控件在上，说明另起一行铺满。
+ *
+ * 用纵向堆叠而不是「名称 — 控件 — 说明」三者同行：
+ * 说明是一句话的完整语义，被挤在控件与名称之间会折成两三行窄柱，
+ * 读起来像注释而不是正文。铺满整行后它才是可读的句子。
+ */
+.se-settings-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.4rem;
+}
+
+.se-settings-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+/*
+ * 说明文字：小一号、次要色、等宽之外的常规字面。
+ * 它承担「这个开关到底会影响什么」的解释责任，
+ * 但不应与设置名称争视觉重量，因此压低到 muted。
+ */
+.se-settings-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--se-muted);
+}
+
+/* 环境不支持 / 操作未完全生效时，说明文字转为强调红，避免被当成普通提示略过 */
+.se-settings-hint-warn {
+  color: var(--se-accent);
+}
+
+/*
+ * 已处于官方无痕状态、本功能自动停用时的说明。
+ *
+ * 用次要色的斜体，而不是强调红：这不是错误，
+ * 是「当前不需要它」的正常状态。用红色会让人以为出了问题。
+ */
+.se-settings-hint-inactive {
+  font-style: italic;
+}
+
+/* 开关不可用：降低不透明度并禁止指针，明确表达「点了也没用」 */
+.se-settings-switch-disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/*
+ * 「进入」按钮：描边按钮，与过滤面板的「添加 / 删除」同一套。
+ *
+ * 这里同样需要 !important —— 必应对 button 有更具体的通用规则，
+ * 会把我们的配色压掉（理由与 .se-filter-add-btn 完全相同，见上方注释）。
+ */
+.se-settings-action {
+  flex: none;
+  padding: 0.35rem 0.9rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--se-fg) !important;
+  background-color: transparent !important;
+  border: 1px solid var(--se-fg) !important;
+  border-radius: 0 !important;
+  cursor: pointer;
+}
+
+.se-settings-action:hover {
+  color: var(--se-bg) !important;
+  background-color: var(--se-fg) !important;
+}
+
+.se-settings-action:focus-visible {
+  outline: 2px solid var(--se-accent) !important;
+  outline-offset: 2px !important;
+}
+
+/*
+ * 开关。
+ *
+ * 关：细描边方块，空白。
+ * 开：整块填入强调红 —— 用「实心」而不是「滑块位移」表达开启，
+ *     因为在本套排印体系里，实心色块是最强的强调手段
+ *     （与页头品牌方块、序号栏同一语汇）。
+ *
+ * 滑块仍然保留并做位移：触屏与读屏之外，它还给出「这是可切换控件」的形状线索。
+ */
+.se-settings-switch {
+  position: relative;
+  flex: none;
+  width: 3.25rem;
+  height: 1.5rem;
+  padding: 0;
+  background-color: transparent !important;
+  border: 1px solid var(--se-fg) !important;
+  border-radius: 0 !important;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.se-settings-knob {
+  position: absolute;
+  top: 50%;
+  left: 3px;
+  width: 0.85rem;
+  height: 0.85rem;
+  background: var(--se-fg);
+  transform: translateY(-50%);
+  transition: left 0.15s ease, background-color 0.15s ease;
+}
+
+/* 开启：红底 + 白色滑块。颜色由令牌控制，暗色模式下强调红会自动提亮 */
+.se-settings-switch-on {
+  background-color: var(--se-accent) !important;
+  border-color: var(--se-accent) !important;
+}
+
+.se-settings-switch-on .se-settings-knob {
+  left: calc(100% - 0.85rem - 3px);
+  background: var(--se-bg);
+}
+
+.se-settings-switch:hover {
+  border-color: var(--se-accent) !important;
+}
+
+.se-settings-switch:focus-visible {
+  outline: 2px solid var(--se-accent) !important;
+  outline-offset: 2px !important;
+}
+
+/*
+ * 底部留白区。
+ * 目前是空的 —— 它的存在是为了让面板在只有两行时也不像一个
+ * 「没画完的弹窗」，同时给后续设置项一个明确的追加位置。
+ */
+.se-settings-tail {
+  min-height: 1.5rem;
+}
+
+/* 窄屏：名称与控件仍可同行（控件都很窄），只收一点内边距 */
+@media (max-width: 480px) {
+  .se-settings-panel {
+    padding: 1.25rem;
+  }
+
+  .se-settings-row {
+    gap: 0.75rem;
+  }
+}
+
+/* ==========================================================================
+ * 设置页清理
+ * --------------------------------------------------------------------------
+ * Bing 设置页（/account/general）上，把已被本脚本取代的设置项折叠起来。
+ *
+ * 风格约束与项目其余部分一致：直角、无阴影、3px 规则线，
+ * 只用边框与字重分层，不引入任何圆角或投影。
+ * ========================================================================== */
+
+/* 顶部总说明 */
+.se-settings-note {
+  margin: 0 0 1.5rem;
+  padding: 0.875rem 1rem;
+  border-left: 3px solid var(--se-ink);
+  background: transparent;
+}
+
+.se-settings-note-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--se-ink);
+}
+
+/* 被折叠的设置块 */
+.se-setting-superseded {
+  /* 原本的分隔线与内边距由折叠后的 summary 接管，这里只清理残留 */
+  padding: 0;
+  margin: 0;
+}
+
+.se-setting-fold {
+  border-top: 1px solid var(--se-rule);
+}
+
+.se-setting-fold:last-child {
+  border-bottom: 1px solid var(--se-rule);
+}
+
+.se-setting-fold-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
+  padding: 0.875rem 0;
+  cursor: pointer;
+  /* 去掉浏览器默认的三角标记，改用自绘的方块 */
+  list-style: none;
+}
+
+.se-setting-fold-summary::-webkit-details-marker {
+  display: none;
+}
+
+/* 自绘标记：一个实心方块，展开时变空心 */
+.se-setting-fold-summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 0.5rem;
+  height: 0.5rem;
+  margin-right: 0.125rem;
+  background: var(--se-ink);
+  transform: translateY(-1px);
+}
+
+.se-setting-fold[open] > .se-setting-fold-summary::before {
+  background: transparent;
+  border: 1px solid var(--se-ink);
+}
+
+.se-setting-fold-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--se-ink);
+  /* 折叠态下用删除线表达「此项已不适用」 */
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.se-setting-fold[open] > .se-setting-fold-summary .se-setting-fold-label {
+  text-decoration: none;
+}
+
+.se-setting-fold-reason {
+  flex: 1 1 auto;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--se-muted);
+}
+
+.se-setting-fold-body {
+  padding: 0 0 1rem 1.25rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  .se-setting-fold-summary::before {
+    background: var(--se-ink);
+  }
+
+  .se-setting-fold[open] > .se-setting-fold-summary::before {
+    border-color: var(--se-ink);
   }
 }

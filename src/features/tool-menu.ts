@@ -1,10 +1,10 @@
 /**
  * 页头菜单（popup）
  *
- * 在页头小标题「BING — 检索」那一行的末尾放一个「菜单」文字按钮，
- * 点开后弹出必应账户、Rewards 与搜索设置的入口。
+ * 在页头小标题「<引擎> — 检索」那一行的末尾放一个「菜单」文字按钮，
+ * 点开后弹出该引擎的账户、站内功能入口，以及本脚本自己的「附加设置」。
  *
- * 这三处原站入口随顶栏一起被移除，重写后需要一个替代品。
+ * 这些原站入口随顶栏一起被移除，重写后需要一个替代品。
  *
  * ## 为什么挂在页头而不是自己做浮层
  *
@@ -13,85 +13,55 @@
  * 改成页头内的 popup 后这些全都不存在 ——
  * 按钮是文档流内的普通元素，位置稳定，也不需要遮罩层。
  *
- * ## 入口指向
+ * ## 引擎差异在哪里
  *
- * 账户与 Rewards 在原站其实是 JS 弹层（href="javascript:void(0)"），
- * 清空 DOM 后其脚本已失效，因此只能指向对应页面。
+ * 账户条目与站内入口**全部由引擎适配器提供**（getAccountEntry /
+ * getExtraEntries），本模块不再认识「必应」「微软账户」这些概念。
+ * 接新引擎时，菜单会自动呈现出该引擎自己的入口 ——
+ * 引擎没实现对应钩子，就只是少几条，不会渲染空壳或报错。
  */
 import type { Feature } from '../types/feature.js';
+import type { EngineAdapter, MenuEntry } from '../types/engine.js';
 import { log } from '../core/env.js';
-import { getBingSession } from './bing-session.js';
-import { MENU_SLOT_CLASS, rerenderResults } from './strip-to-results.js';
-import { openFilterPanel } from './filter-panel.js';
+import { MENU_SLOT_CLASS } from './strip-to-results.js';
+import { openSettingsPanel } from './settings-panel.js';
 
 /** 菜单按钮的类名（同时也是幂等判据） */
 export const MENU_BUTTON_CLASS = 'se-menu-btn';
 
-/** 「结果过滤设置」按钮的类名，验证脚本据此定位 */
-export const FILTER_ENTRY_CLASS = 'se-menu-filter';
+/**
+ * 「附加设置」按钮的类名，验证脚本据此定位。
+ *
+ * 早前这里是「结果过滤设置」的直接入口（se-menu-filter）；
+ * 现在过滤设置收进了附加设置弹窗，菜单首项变成一个开关面板的入口。
+ */
+export const SETTINGS_ENTRY_CLASS = 'se-menu-settings';
 
 /** 弹出面板 id，供 aria-controls 引用 */
 const POPUP_ID = 'se-menu-popup';
 
-/*
- * 站内入口一律**跟随当前站点**，不写死 www.bing.com。
- *
- * 必应有多个等价入口（www / cn / www2 / www4 …），
- * 而用户改用备用域名，往往正是因为 www 那一侧访问不了 ——
- * 写死就会把这类用户又弹回一个打不开的域名上去。
- *
- * 实测这些路径在 www / cn / www2 / www4 上都存在：
- *   /fd/auth/signin    302 到各自的 /v2 变体，再转 login.live.com
- *   /account/general   直接 200，各自语言设置页
- */
-function signInUrl(): string {
-  const here = location.origin;
-  return (
-    `${here}/fd/auth/signin?action=interactive` +
-    `&provider=windows_live_id&return_url=${encodeURIComponent(`${here}/`)}`
-  );
-}
-
-/** 已登录时的去向：微软账户官网 */
-const MICROSOFT_ACCOUNT_URL = 'https://account.microsoft.com/';
-
-interface MenuEntry {
-  label: string;
-  href: string;
-}
-
 /**
- * 固定条目。
+ * 收集本次菜单要展示的**外链**条目。
  *
- * Rewards 保持绝对地址：它在**另一个**子域上（rewards.bing.com），
- * 不是当前站点的路径，不能跟着 origin 走。
- * 「搜索设置」则相反 —— 四个入口各有自己的设置页，应该留在当前站点。
+ * 顺序即展示顺序：账户条目在最前（它最常被用到），
+ * 其后是引擎自己的站内入口。
+ *
+ * ## 账户条目始终显示
+ *
+ * 早前「净化链接」还叫「搜索隐私增强」时，开启后会隐藏账户条目，
+ * 意图是让界面不提示身份。但那样做的副作用很糟：
+ * 用户反而**无从确认自己的登录状态**（见下文说明）。
+ * 该顾虑已随 Cookie 方案一并消失 —— 净化链接只改地址栏，
+ * 不影响登录态，也就没有理由再藏账户入口。
  */
-function fixedEntries(): MenuEntry[] {
-  return [
-    { label: 'Microsoft Rewards', href: 'https://rewards.bing.com/dashboard' },
-    { label: '搜索设置', href: `${location.origin}/account/general` },
-  ];
-}
+function collectEntries(engine: EngineAdapter): MenuEntry[] {
+  const entries: MenuEntry[] = [];
 
-/**
- * 生成账户条目。
- *
- * 已登录 → 「已作为 X 登录」，去微软账户官网
- * 未登录 → 「点击登录 Bing」，去必应登录端点
- *
- * 会话状态在页面被重写前采集（见 bing-session.ts），
- * 因为判据所在的顶栏已被清掉。
- */
-function buildAccountEntry(): MenuEntry {
-  const session = getBingSession();
-  if (session.signedIn) {
-    return {
-      label: session.name ? `已作为 ${session.name} 登录` : '已登录必应',
-      href: MICROSOFT_ACCOUNT_URL,
-    };
-  }
-  return { label: '点击登录 Bing', href: signInUrl() };
+  const account = engine.getAccountEntry?.();
+  if (account) entries.push(account);
+
+  entries.push(...(engine.getExtraEntries?.() ?? []));
+  return entries;
 }
 
 /** 当前挂载的清理函数 */
@@ -100,14 +70,14 @@ let cleanups: Array<() => void> = [];
 export const toolMenu: Feature = {
   id: 'tool-menu',
   name: '页头菜单',
-  description: '在页头小标题行末提供必应账户、Rewards 与搜索设置入口。',
+  description: '在页头小标题行末提供该引擎的账户与站内功能入口。',
   engines: 'all',
 
   supports() {
     return true;
   },
 
-  onNavigate() {
+  onNavigate({ engine }) {
     const slot = document.querySelector<HTMLElement>(`.${MENU_SLOT_CLASS}`);
     if (!slot) {
       // 页面尚未重写或页头结构变了，不静默失败
@@ -117,7 +87,7 @@ export const toolMenu: Feature = {
     // 幂等：已挂载则不重复插入
     if (slot.querySelector(`.${MENU_BUTTON_CLASS}`)) return;
 
-    const { button, popup } = buildMenu();
+    const { button, popup } = buildMenu(engine);
     slot.append(button, popup);
 
     cleanups = [];
@@ -135,7 +105,7 @@ export const toolMenu: Feature = {
 };
 
 /** 构建「菜单」按钮与弹出面板 */
-function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
+function buildMenu(engine: EngineAdapter): { button: HTMLButtonElement; popup: HTMLElement } {
   const button = document.createElement('button');
   button.type = 'button';
   button.className = MENU_BUTTON_CLASS;
@@ -153,16 +123,20 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
 
   const nav = document.createElement('nav');
   nav.className = 'se-menu-nav';
-  nav.setAttribute('aria-label', '必应功能入口');
+  nav.setAttribute('aria-label', `${engine.name} 功能入口`);
 
   /*
-   * 结果过滤设置放在最前。
-   * 它是本脚本自己的功能，与后面三个「原站入口替代品」性质不同，
+   * 「附加设置」放最前。
+   * 它是本脚本自己的设置入口，与后面几个「原站入口替代品」性质不同，
    * 放最前也最容易被找到。
    */
-  nav.appendChild(buildFilterEntry());
+  nav.appendChild(buildSettingsEntry(engine));
 
-  for (const entry of [buildAccountEntry(), ...fixedEntries()]) {
+  /*
+   * 账户条目与站内入口全部来自适配器，见 collectEntries。
+   * 隐私模式下账户条目不渲染（不登出，只是不提示）。
+   */
+  for (const entry of collectEntries(engine)) {
     const a = document.createElement('a');
     a.className = 'se-menu-link';
     a.href = entry.href;
@@ -193,30 +167,27 @@ function buildMenu(): { button: HTMLButtonElement; popup: HTMLElement } {
 }
 
 /**
- * 「结果过滤设置」入口。
+ * 「附加设置」入口。
  *
  * 与其他条目不同，它是 <button> 而非 <a> ——
- * 这里不跳转，只打开一层设置浮层。
+ * 这里不跳转，只打开一层设置弹窗。
  * 但仍套一层 span，理由与其他条目一致：
  * 挡住外部样式表可能加在链接 / 按钮上的 text-decoration，
  * 那类装饰不会传播进原子行内元素。
  */
-function buildFilterEntry(): HTMLButtonElement {
+function buildSettingsEntry(engine: EngineAdapter): HTMLButtonElement {
   const button = document.createElement('button');
   button.type = 'button';
-  button.className = `se-menu-link ${FILTER_ENTRY_CLASS}`;
+  button.className = `se-menu-link ${SETTINGS_ENTRY_CLASS}`;
   button.setAttribute('role', 'menuitem');
 
   const label = document.createElement('span');
   label.className = 'se-menu-label';
-  label.textContent = '结果过滤设置';
+  label.textContent = '附加设置';
 
   button.appendChild(label);
   button.addEventListener('click', () => {
-    openFilterPanel(() => {
-      // 规则变化后立即重建列表，用户关不关面板都能看到效果
-      if (!rerenderResults()) log.warn('未找到结果列表，过滤改动将在下次重写后生效');
-    });
+    openSettingsPanel({ engine });
   });
   return button;
 }

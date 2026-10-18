@@ -30,7 +30,26 @@ if (!existsSync(samplePath)) {
 }
 
 const html = readFileSync(samplePath, 'utf8');
-const bundle = readFileSync(join(root, 'dist/dev/dotSearch.user.js'), 'utf8');
+
+/*
+ * 产物路径不再写死。
+ *
+ * 项目已拆成「每引擎一个产物」（dotSearch-bing.user.js 等），
+ * 写死旧名字会在拆分后立刻 404。这里按 engines/<id> 解析，
+ * 并用 --engine= 选择要验证哪个产物（默认必应）。
+ */
+const engineArg =
+  process.argv.slice(2).find((a) => a.startsWith('--engine='))?.split('=')[1] ?? 'bing';
+const metaModule = await import(
+  `file://${join(root, '.build', 'meta.mjs').replace(/\\/g, '/')}`
+);
+const bundlePath = join(root, 'dist', 'dev', metaModule.artifactFor(engineArg));
+if (!existsSync(bundlePath)) {
+  console.error(`找不到产物：${bundlePath}`);
+  console.error('请先运行 npm run build:dev（或 npm run verify:strip）。');
+  process.exit(2);
+}
+const bundle = readFileSync(bundlePath, 'utf8');
 
 // ---- 用本地 http 服务提供样例页面，避免 about:blank 的 cookie 限制 ----
 const server = createServer((req, res) => {
@@ -747,15 +766,15 @@ const menuOk =
   menuOpen.expanded === 'true' &&
   // 弹出层锚定在按钮下方
   menuOpen.popupPosition === 'absolute' &&
-  // 共 4 项：本脚本的「结果过滤设置」+ 3 个原站入口替代品
+  // 共 4 项：本脚本的「附加设置」+ 3 个原站入口替代品
   menuOpen.linkCount === 4 &&
   /*
-   * 首个条目是「结果过滤设置」，它是 <button> 而非 <a>：
-   * 它不跳转，只打开设置浮层，因此不该有 href / target。
+   * 首个条目是「附加设置」，它是 <button> 而非 <a>：
+   * 它不跳转，只打开设置弹窗，因此不该有 href / target。
    * 用 href === null 与后面三条的 href.startsWith('http') 区分开 ——
    * 若哪天它被误改成 <a href="javascript:void(0)">，这里会立刻报错。
    */
-  menuOpen.links[0]?.label === '结果过滤设置' &&
+  menuOpen.links[0]?.label === '附加设置' &&
   menuOpen.links[0]?.tag === 'BUTTON' &&
   menuOpen.links[0]?.href === null &&
   /*
@@ -1015,11 +1034,14 @@ await page.evaluate(() => {
 await page.waitForTimeout(200);
 
 const filterEntryExists = await page.evaluate(
-  () => !!document.querySelector('#se-menu-popup .se-menu-filter'),
+  () => !!document.querySelector('#se-menu-popup .se-menu-settings'),
 );
 
 /*
- * 点「结果过滤设置」。
+ * 打开过滤设置：菜单 → 附加设置 → 「进入」。
+ *
+ * 过滤设置不再是菜单里的直接条目，而是附加设置弹窗里的一行；
+ * 这一串动作恰好也验证了「进入」按钮确实接到原有面板上。
  *
  * 不用 locator.click()：该按钮位于 popup 内，而 popup 的父级
  * .se-brand-row 在本环境被 Playwright 误判为「遮挡」（与菜单按钮同因，
@@ -1027,9 +1049,12 @@ const filterEntryExists = await page.evaluate(
  * 我们注册的就是 click 监听器，走的仍是真实代码路径。
  */
 const panelOpened = await page.evaluate(() => {
-  const btn = document.querySelector('#se-menu-popup .se-menu-filter');
-  if (!btn) return false;
-  btn.click();
+  const entry = document.querySelector('#se-menu-popup .se-menu-settings');
+  if (!entry) return false;
+  entry.click();
+  const go = document.querySelector('.se-settings-goto');
+  if (!go) return false;
+  go.click();
   return !!document.querySelector('.se-filter-panel');
 });
 
@@ -1101,7 +1126,7 @@ const toggled = await page.evaluate(() => {
 });
 
 console.log('=== 结果过滤：设置浮层 ===');
-console.log(`  菜单入口「结果过滤设置」：${filterEntryExists ? '存在' : '缺失'}`);
+console.log(`  菜单入口「附加设置」：${filterEntryExists ? '存在' : '缺失'}`);
 console.log(`  点击后浮层打开：${panelOpened}`);
 console.log(
   `  通过 UI 添加两条：行数=${added.rows ?? '-'}  存储=${JSON.stringify(added.stored ?? [])}`,
@@ -1208,8 +1233,20 @@ const switchedToHide = await page.evaluate(() => {
 
 console.log('  逐行改为 hide 后的即时隐藏数：' + JSON.stringify(switchedToHide));
 
-// 关掉面板再断言（面板会挡住点击坐标）
-await page.evaluate(() => document.querySelector('.se-filter-close')?.click());
+/*
+ * 关掉浮层再断言（浮层会挡住点击坐标）。
+ *
+ * ⚠️ 必须关**两层**：过滤面板是叠在「附加设置」弹窗之上的，
+ * 也就是说打开路径是 菜单 → 附加设置 → 进入 → 过滤面板。
+ * 只点 .se-filter-close 只会关掉上面那层，
+ * 底下的 .se-settings-panel 遮罩仍然盖住页面 ——
+ * 后续的坐标点击会落在弹窗上而不是占位条上。
+ * （这里曾导致「单击恢复」长期红灯，而代码本身是对的。）
+ */
+await page.evaluate(() => {
+  document.querySelector('.se-filter-close')?.click();
+  document.querySelector('.se-settings-close')?.click();
+});
 await page.waitForTimeout(250);
 
 const hideState = await inspectItems();
@@ -1282,10 +1319,37 @@ await page.screenshot({ path: join(root, '.build', hiddenShot), fullPage: true }
  * 用真实鼠标坐标点击（而不是 dispatchEvent）：
  * 「用户单击」是需求里的原话，必须验证合成鼠标能真正落到占位条上 ——
  * 这同时验证了占位条没有被别的元素挡住。
+ *
+ * ⚠️ 点击前必须先滚动到位。
+ * boundingBox() 返回的是**相对视口**的坐标，而 mouse.click 用的也是视口坐标。
+ * 若元素在视口之外（本段之前有 fullPage 截图与多处交互，页面滚动位置不定），
+ * 算出来的坐标就会落到别的地方 —— 点击看似执行了，实际没命中目标。
+ * 这一步曾经让「单击恢复」在拆分重构期间反复红灯，排查了很久。
  */
+await page.locator('.se-item-hidden').first().scrollIntoViewIfNeeded();
 const firstHiddenBox = await page.locator('.se-item-hidden').first().boundingBox();
 const hiddenNumBefore = hiddenItems[0]?.num;
 const hiddenTitleBefore = hiddenItems[0]?.title;
+
+/* 点击前确认落点确实在占位条上；不成立就直接报出来，而不是等断言失败 */
+const clickTarget = await page.evaluate(
+  ([x, y]) => {
+    const el = document.elementFromPoint(x, y);
+    return {
+      tag: el?.tagName ?? null,
+      cls: String(el?.className ?? ''),
+      inHidden: !!el?.closest('.se-item-hidden'),
+    };
+  },
+  [firstHiddenBox.x + firstHiddenBox.width / 2, firstHiddenBox.y + 20],
+);
+if (!clickTarget.inHidden) {
+  console.log(
+    `  [诊断] 点击落点未命中占位条：${clickTarget.tag}.${clickTarget.cls}` +
+      `（坐标 ${Math.round(firstHiddenBox.x)},${Math.round(firstHiddenBox.y)}）`,
+  );
+}
+
 await page.mouse.click(firstHiddenBox.x + firstHiddenBox.width / 2, firstHiddenBox.y + 20);
 await page.waitForTimeout(250);
 
@@ -1486,7 +1550,9 @@ const styleState = await page.evaluate(() => {
     JSON.stringify([{ domain: 'example.com', action: 'badge' }]),
   );
   document.querySelector('.se-menu-btn')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-  document.querySelector('#se-menu-popup .se-menu-filter')?.click();
+  // 过滤设置现在藏在「附加设置」里：菜单 → 附加设置 → 进入
+  document.querySelector('#se-menu-popup .se-menu-settings')?.click();
+  document.querySelector('.se-settings-goto')?.click();
 
   const pick = (sel) => {
     const el = document.querySelector(sel);
@@ -1668,14 +1734,19 @@ const panelRulesOf = (target) =>
     const btn = document.querySelector('.se-menu-btn');
     if (!btn) return { ok: false, reason: '菜单按钮缺失' };
     btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    const entry = document.querySelector('#se-menu-popup .se-menu-filter');
-    if (!entry) return { ok: false, reason: '过滤入口缺失' };
+    const entry = document.querySelector('#se-menu-popup .se-menu-settings');
+    if (!entry) return { ok: false, reason: '附加设置入口缺失' };
     entry.click();
+    const go = document.querySelector('.se-settings-goto');
+    if (!go) return { ok: false, reason: '「进入」按钮缺失' };
+    go.click();
     const rows = [...document.querySelectorAll('.se-filter-row')].map((r) => ({
       domain: r.querySelector('.se-filter-domain')?.value ?? '',
       action: r.querySelector('.se-filter-action')?.value ?? '',
     }));
+    // 关两层浮层（过滤面板叠在附加设置弹窗之上）
     document.querySelector('.se-filter-close')?.click();
+    document.querySelector('.se-settings-close')?.click();
     return { ok: true, rows };
   });
 
@@ -1698,7 +1769,8 @@ const aMigrated = aSharedAfterBoot?.[RULES_KEY] ? JSON.parse(aSharedAfterBoot[RU
 // 再通过面板 UI 加一条（走真实的输入 + 按钮路径），看它落到哪
 const aAdded = await pageA.evaluate(() => {
   document.querySelector('.se-menu-btn').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-  document.querySelector('#se-menu-popup .se-menu-filter').click();
+  document.querySelector('#se-menu-popup .se-menu-settings').click();
+  document.querySelector('.se-settings-goto').click();
   const input = document.querySelector('.se-filter-add .se-filter-input');
   const select = document.querySelector('.se-filter-add .se-filter-select');
   input.value = 'zhihu.com';
@@ -1708,7 +1780,9 @@ const aAdded = await pageA.evaluate(() => {
   const rows = [...document.querySelectorAll('.se-filter-row')].map(
     (r) => r.querySelector('.se-filter-domain')?.value,
   );
+  // 关两层浮层：过滤面板叠在附加设置弹窗之上（见前文同名说明）
   document.querySelector('.se-filter-close')?.click();
+  document.querySelector('.se-settings-close')?.click();
   return { rows };
 });
 await pageA.waitForTimeout(200);
@@ -1805,16 +1879,16 @@ await page.waitForTimeout(1500);
 
 const signedInEntry = await page.evaluate(() => {
   /*
-   * 取账户那条 —— 它是 <a>，而首条「结果过滤设置」是 <button>。
-   * 早期版本用 '.se-menu-link' 取首个匹配，加了过滤入口后
-   * 拿到的变成了那个按钮（label「结果过滤设置」、无 href），断言随之失败。
+   * 取账户那条 —— 它是 <a>，而首条「附加设置」是 <button>。
+   * 早期版本用 '.se-menu-link' 取首个匹配，加了设置入口后
+   * 拿到的变成了那个按钮（label「附加设置」、无 href），断言随之失败。
    */
   const link = document.querySelector('#se-menu-popup a.se-menu-link');
   const first = document.querySelector('#se-menu-popup .se-menu-link');
   return {
     label: link ? link.textContent.trim() : null,
     href: link?.getAttribute('href') ?? null,
-    // 顺带确认过滤入口仍在首位且未串位
+    // 顺带确认附加设置入口仍在首位且未串位
     firstTag: first?.tagName ?? null,
     firstLabel: first ? first.textContent.trim() : null,
   };
@@ -1828,13 +1902,202 @@ console.log(`  账户入口：${signedInEntry.label ?? '(缺失)'} → ${signedI
 const signedInOk =
   signedInShape === 'ok' &&
   signedInEntry.firstTag === 'BUTTON' &&
-  signedInEntry.firstLabel === '结果过滤设置' &&
+  signedInEntry.firstLabel === '附加设置' &&
   signedInEntry.label !== null &&
   /^已作为 .+ 登录$/.test(signedInEntry.label) &&
   (signedInEntry.href ?? '').startsWith('https://account.microsoft.com');
 
 console.log(signedInOk ? '  ✅ 已登录分支正确' : '  ❌ 已登录分支不符预期');
 
+/* ==========================================================================
+ * 开启净化链接后，账户入口必须依然可见
+ * --------------------------------------------------------------------------
+ * 这是一个明确的回归点：早前「搜索隐私增强」开启后会隐藏账户条目，
+ * 导致用户无从确认自己的登录状态。改造为纯链接净化后，
+ * 该策略已被移除 —— 这里锁住它，防止又被加回来。
+ * ========================================================================== */
+const accountWithSanitize = await page.evaluate(async () => {
+  // 开启净化链接
+  localStorage.setItem('search-enhance:settings', JSON.stringify({ privacy: true }));
+
+  // 触发一次重写，让菜单按新设置重建
+  globalThis.dispatchEvent(new Event('popstate'));
+
+  // 等菜单重建
+  await new Promise((r) => setTimeout(r, 700));
+
+  const btn = document.querySelector('.se-menu-btn');
+  btn?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 200));
+
+  const links = [...document.querySelectorAll('#se-menu-popup a.se-menu-link')].map((a) => ({
+    label: a.textContent.trim(),
+    href: a.getAttribute('href'),
+  }));
+
+  return {
+    enabled: JSON.parse(localStorage.getItem('search-enhance:settings') ?? '{}').privacy === true,
+    links,
+  };
+});
+
+console.log('\n=== 净化开启时的账户入口 ===');
+console.log(`  设置已开启：${accountWithSanitize.enabled}`);
+console.log(`  菜单链接：${JSON.stringify(accountWithSanitize.links.map((l) => l.label))}`);
+
+const accountVisibleOk =
+  accountWithSanitize.enabled &&
+  accountWithSanitize.links.some((l) => /^已作为 .+ 登录$/.test(l.label)) &&
+  accountWithSanitize.links.some((l) => (l.href ?? '').includes('rewards.bing.com'));
+
+console.log(
+  accountVisibleOk
+    ? '  ✅ 净化开启后账户入口仍在'
+    : '  ❌ 净化开启后账户入口不应被隐藏',
+);
+
+// 复原设置，避免影响后续段落
+await page.evaluate(() => localStorage.removeItem('search-enhance:settings'));
+
+/* ==========================================================================
+ * 附加设置：弹窗结构 + 净化链接
+ * --------------------------------------------------------------------------
+ * 三件事要测：
+ *   1. 弹窗能打开，且两行都在（结果过滤设置的「进入」、净化链接开关）
+ *   2. 开关能切换、能持久化
+ *   3. 净化链接只能改地址栏，不触碰 Cookie
+ *
+ * 注意：本脚本跑在离线的本地快照上，没有真实的追踪参数可净化，
+ * 「地址栏真的被净化」由 verify-sanitize.mjs 用构造的 URL 覆盖。
+ * ========================================================================== */
+
+const settingsPage = await browser.newPage({ viewport: { width: 1280, height: 1000 } });
+/*
+ * 强制引擎钩子必须在注入脚本**之前**设置。
+ *
+ * 拆分后 Runner 会先校验「当前 URL 是否属于本引擎的搜索页」，
+ * 而这个页面跑在 127.0.0.1 上，isSearchPage 必然不成立 ——
+ * 不设置这个钩子，脚本会正常退出、菜单根本不出现。
+ */
+await settingsPage.addInitScript(() => {
+  globalThis.__SE_FORCE_ENGINE__ = 'bing';
+});
+await settingsPage.goto(pageUrl, { waitUntil: 'domcontentloaded' });
+// 从干净的设置起步：默认必须是关闭
+await settingsPage.evaluate(() => {
+  localStorage.removeItem('search-enhance:settings');
+});
+await settingsPage.addScriptTag({ content: code });
+await settingsPage.waitForTimeout(1200);
+
+const openSettings = () =>
+  settingsPage.evaluate(() => {
+    document.querySelector('.se-menu-btn')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    const entry = document.querySelector('#se-menu-popup .se-menu-settings');
+    if (!entry) return { ok: false, reason: '附加设置入口缺失' };
+    entry.click();
+    const panel = document.querySelector('.se-settings-panel');
+    if (!panel) return { ok: false, reason: '弹窗未出现' };
+
+    const rows = [...panel.querySelectorAll('.se-settings-row')];
+    const rowOf = (name) =>
+      rows.find((r) => r.querySelector('.se-settings-label')?.textContent?.trim() === name);
+
+    const privacyRow = rowOf('净化链接');
+    const toggle = panel.querySelector('.se-privacy-toggle');
+    const hintEl = privacyRow?.querySelector('.se-settings-hint');
+
+    return {
+      ok: true,
+      title: panel.querySelector('.se-settings-title')?.textContent?.trim(),
+      rowLabels: rows.map((r) => r.querySelector('.se-settings-label')?.textContent?.trim()),
+      hasGoto: !!panel.querySelector('.se-settings-goto'),
+      hasToggle: !!toggle,
+      toggleRole: toggle?.getAttribute('role') ?? null,
+      toggleChecked: toggle?.getAttribute('aria-checked') ?? null,
+      toggleDisabled: toggle?.disabled ?? null,
+      hint: hintEl?.textContent?.trim() ?? null,
+      hintWarn: hintEl?.classList.contains('se-settings-hint-warn') ?? null,
+      filterHint: rowOf('结果过滤设置')?.querySelector('.se-settings-hint')?.textContent?.trim() ?? null,
+      host: panel.closest('.se-settings-overlay')?.parentElement?.id ?? null,
+    };
+  });
+
+const settingsOpened = await openSettings();
+
+/* ---- 切换开关并确认持久化 ---- */
+const privacyPersisted = await (async () => {
+  const before = await settingsPage.evaluate(() => {
+    const toggle = document.querySelector('.se-privacy-toggle');
+    if (!toggle) return { error: '开关缺失' };
+    toggle.click();
+    return {
+      checked: toggle.getAttribute('aria-checked'),
+      stored: localStorage.getItem('search-enhance:settings'),
+    };
+  });
+  await settingsPage.waitForTimeout(300);
+
+  // 关掉弹窗 → 重开 → 看状态是否保留
+  await settingsPage.evaluate(() => {
+    document.querySelector('.se-settings-close')?.click();
+  });
+  await settingsPage.waitForTimeout(200);
+  const reopened = await openSettings();
+
+  return { ...before, reopenedChecked: reopened.toggleChecked };
+})();
+
+/*
+ * 净化链接**不应触碰 Cookie**。
+ * 这条是本次改造的核心约束：确认包里已无任何 Cookie 操作能力。
+ */
+const noCookieOps = await settingsPage.evaluate(async () => {
+  const src = [...document.scripts].map((s) => s.textContent ?? '').join('');
+  return {
+    hasGmCookie: /GM_cookie/.test(src),
+    hasCookieApi: /document\.cookie\s*=/.test(src),
+  };
+});
+
+console.log('=== 附加设置 / 净化链接 ===');
+console.log(`  弹窗：${settingsOpened.ok ? '打开' : settingsOpened.reason} 标题=${settingsOpened.title}`);
+console.log(`  行目：${(settingsOpened.rowLabels ?? []).join(' | ')}`);
+console.log(`  进入按钮=${settingsOpened.hasGoto} 开关 role=${settingsOpened.toggleRole} 初始=${settingsOpened.toggleChecked}`);
+console.log(`  宿主=#${settingsOpened.host}（应为 se-root）`);
+console.log(`  开关可点（不再依赖 GM_cookie）=${settingsOpened.toggleDisabled === false}`);
+console.log(`  过滤行说明：${settingsOpened.filterHint}`);
+console.log(`  净化行说明：${settingsOpened.hint}`);
+console.log(`  点开后 aria-checked=${privacyPersisted.checked} 存储=${privacyPersisted.stored}`);
+console.log(`  重开后仍开启：${privacyPersisted.reopenedChecked}`);
+console.log(`  包内残留 GM_cookie：${noCookieOps.hasGmCookie}（应为 false）`);
+
+const settingsOk =
+  settingsOpened.ok &&
+  settingsOpened.title === '附加设置' &&
+  settingsOpened.rowLabels?.[0] === '结果过滤设置' &&
+  settingsOpened.rowLabels?.[1] === '净化链接' &&
+  settingsOpened.hasGoto &&
+  settingsOpened.hasToggle &&
+  settingsOpened.toggleRole === 'switch' &&
+  // 默认必须是关闭：升级后不该突然改变用户页面
+  settingsOpened.toggleChecked === 'false' &&
+  settingsOpened.host === 'se-root' &&
+  // 不再依赖 GM_cookie，开关任何时候都能点
+  settingsOpened.toggleDisabled === false &&
+  // 说明文字即是对用户的承诺，逐字核对
+  settingsOpened.hint === '去除链接中的跟踪条目，其余不再变动。' &&
+  // 切换能生效并持久化
+  privacyPersisted.checked === 'true' &&
+  /"privacy":\s*true/.test(privacyPersisted.stored ?? '') &&
+  privacyPersisted.reopenedChecked === 'true' &&
+  // 核心约束：不再有任何 Cookie 操作
+  noCookieOps.hasGmCookie === false;
+
+console.log(settingsOk ? '  ✅ 附加设置与净化链接符合预期' : '  ❌ 附加设置与净化链接不符预期');
+
 await browser.close();
 server.close();
-process.exit(pass && pagerOk && filterOk && crossOriginOk && signedInOk ? 0 : 1);
+process.exit(
+  pass && pagerOk && filterOk && crossOriginOk && signedInOk && accountVisibleOk && settingsOk ? 0 : 1,
+);

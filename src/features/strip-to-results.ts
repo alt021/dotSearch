@@ -1,8 +1,9 @@
 import type { Feature } from '../types/feature.js';
 import type { EngineAdapter, SearchResult } from '../types/engine.js';
 import { log } from '../core/env.js';
-import { captureBingSession } from './bing-session.js';
 import { getRules, matchRule, type FilterRule } from './filter-store.js';
+import { isPrivacyEnabled } from './settings-store.js';
+import { cleanAddressBar, sanitizeSearchUrl } from './privacy.js';
 
 /**
  * 结果页重写：把 Bing 结果页替换为「搜索框 + 干净的结果列表」。
@@ -162,11 +163,11 @@ export const stripToResults: Feature = {
    * 说明改写结果已不完整，应当重建。
    * 若原站本就没有分页（结果不足一页），则不算异常，保持现状。
    */
-  needsRebuild() {
+  needsRebuild(engine) {
     const rendered = document.querySelector('.se-pagination');
     if (rendered) return false; // 分页在，状态完整
     // 页面上没有分页，看原站是否具备分页可供提取
-    const source = extractPaginationLinks();
+    const source = extractPaginationLinks(engine.searchForm.param);
     return source.length > 0;
   },
 
@@ -198,7 +199,7 @@ export const stripToResults: Feature = {
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
-    const pages = extractPaginationLinks();
+    const pages = extractPaginationLinks(engine.searchForm.param);
 
     /*
      * 诊断信息必须在清空 DOM **之前**采集。
@@ -220,12 +221,14 @@ export const stripToResults: Feature = {
      * 清理后若已无实质内容，则整体丢弃，不留空壳。
      */
     /*
-     * 必应会话状态也必须在清空前采集：
-     * 判据来自顶栏（#id_a / #id_l / #id_p），而顶栏正是被本功能清掉的。
-     * 右侧工具栏在页面重建后才挂载，那时已无从读取，
-     * 故在此取一次并缓存，供其使用。
+     * 引擎的会话状态也必须在清空前采集：
+     * 判据通常位于顶栏（必应的是 #id_a / #id_l / #id_p），
+     * 而顶栏正是被本功能清掉的。菜单在页面重建后才挂载，
+     * 那时已无从读取，故在此取一次并缓存。
+     *
+     * 引擎没实现这个钩子（例如没有账户概念）时直接跳过。
      */
-    captureBingSession();
+    engine.captureSession?.();
 
     const answerNodes = Array.from(
       document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
@@ -336,6 +339,22 @@ export const stripToResults: Feature = {
       `[重写完成] DOM ${before} → ${after}（其中隐藏数据源 ${hidden} 个节点），` +
         `结果 ${results.length} 条，分页 ${pages.length} 项（${lastPaginationDebug}）`,
     );
+
+    /*
+     * 隐私模式：把地址栏换成净化后的地址。
+     *
+     * ⚠️ 必须放在**重写完成之后**（这里），不能提前到构建阶段：
+     * replaceState 会触发 onUrlChange 的通知，Runner 收到后可能再跑一轮。
+     * 此刻根容器与分页都已就位，needsRebuild() 才会判为「状态完整」而跳过；
+     * 若在构建期间就改地址，重新进入的 runAll 会看到「没有根容器」，
+     * 于是两份重写并发执行，页面出现重复的 se-root。
+     *
+     * 净化后分页链接也不会再带着 cvid / form 之类的参数，
+     * 因为分页基址取自 location.href（见 buildPageHref）。
+     */
+    if (isPrivacyEnabled() && cleanAddressBar(engine.searchForm.param)) {
+      log.info('净化链接：已去掉地址栏中的追踪参数');
+    }
   },
 };
 
@@ -358,6 +377,7 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   const mark = document.createElement('span');
   mark.className = 'se-mark';
   mark.setAttribute('aria-hidden', 'true');
+
   brand.append(mark, document.createTextNode(`${engine.name} — 检索`));
 
   /*
@@ -921,9 +941,16 @@ function collectRenderedPageNumbers(): number[] {
   return [...nums].sort((a, b) => a - b);
 }
 
-/** 基于当前 URL 构造第 page 页的地址 */
-function buildPageHref(base: URL, page: number, pageSize: number): string {
-  const url = new URL(base.href);
+/**
+ * 基于当前 URL 构造第 page 页的地址。
+ *
+ * 隐私模式下先净化基址：分页链接会出现在页面上、可被复制与分享，
+ * 若把它们照着原地址（含 cvid / form 等）拼出来，
+ * 等于把追踪参数一路传播到后面每一页。
+ */
+function buildPageHref(base: URL, page: number, pageSize: number, queryParam: string): string {
+  const source = isPrivacyEnabled() ? sanitizeSearchUrl(base, queryParam) : new URL(base.href);
+  const url = new URL(source.href);
   if (page <= 1) {
     // 第 1 页是默认值，去掉参数让地址更干净
     url.searchParams.delete('first');
@@ -957,10 +984,13 @@ function collectNumericPageHints(): number[] {
   return [...nums];
 }
 
-/** 提取分页。返回空数组表示该页确实没有分页
+/**
+ * 提取分页。返回空数组表示该页确实没有分页
  * （结果不足一页，或原站未提供任何翻页线索）。
+ *
+ * @param queryParam 引擎的搜索词参数名；隐私模式下净化分页基址时要用
  */
-function extractPaginationLinks(): PageLink[] {
+function extractPaginationLinks(queryParam = 'q'): PageLink[] {
   const offsets = collectPageOffsets();
   const pageSize = detectPageSize(offsets);
   const base = new URL(location.href);
@@ -1004,7 +1034,7 @@ function extractPaginationLinks(): PageLink[] {
     pages.push({
       label: String(n),
       // 当前页不给链接（渲染为 span，语义上不可点）
-      href: isCurrent ? null : buildPageHref(base, n, pageSize),
+      href: isCurrent ? null : buildPageHref(base, n, pageSize, queryParam),
       ariaLabel: `第 ${n} 页`,
       current: isCurrent,
     });
@@ -1013,11 +1043,26 @@ function extractPaginationLinks(): PageLink[] {
   return pages;
 }
 
-/** 构建分页导航 */
+/**
+ * 构建分页导航。
+ *
+ * 同时产出两套控件，由 CSS 按视口二选一：
+ *   - 页码列表（`.se-pagination-pages`）：桌面端显示，可跳到任意页
+ *   - 上/下一页（`.se-pagination-steps`）：窄屏显示
+ *
+ * 为什么窄屏不用页码：手机上页码一行放不下，换行后每个目标又小到难以点中，
+ * 而「上一页 / 下一页」是顺序阅读时真正会用的两个动作。
+ * 两套都渲染、用 CSS 切换，而不是按视口判断后重建 ——
+ * 那样旋转屏幕或调整窗口就得重新生成 DOM，还会打断正在阅读的位置。
+ */
 function buildPagination(pages: PageLink[]): HTMLElement {
   const nav = document.createElement('nav');
   nav.className = 'se-pagination';
   nav.setAttribute('aria-label', '分页');
+
+  /* ---- 一、页码列表（桌面） ---- */
+  const pageList = document.createElement('div');
+  pageList.className = 'se-pagination-pages';
 
   for (const page of pages) {
     if (page.current) {
@@ -1027,7 +1072,7 @@ function buildPagination(pages: PageLink[]): HTMLElement {
       cur.textContent = page.label;
       cur.setAttribute('aria-current', 'page');
       cur.setAttribute('aria-label', page.ariaLabel);
-      nav.appendChild(cur);
+      pageList.appendChild(cur);
       continue;
     }
 
@@ -1036,10 +1081,76 @@ function buildPagination(pages: PageLink[]): HTMLElement {
     link.href = page.href ?? '#';
     link.textContent = page.label;
     link.setAttribute('aria-label', page.ariaLabel);
-    nav.appendChild(link);
+    pageList.appendChild(link);
   }
 
+  nav.appendChild(pageList);
+
+  /* ---- 二、上一页 / 下一页（窄屏） ---- */
+  const steps = document.createElement('div');
+  steps.className = 'se-pagination-steps';
+
+  const currentIdx = pages.findIndex((p) => p.current);
+
+  /*
+   * 取当前页前后最近的一个可用页码。
+   *
+   * 不能简单用 pages[currentIdx ± 1]：页码列表在页数多时可能是
+   * 「1 … 4 5 6 … 20」这种省略形态，相邻项未必就是上一页/下一页。
+   * 因此按 label 的数值来判定相邻关系。
+   */
+  const currentEntry = currentIdx >= 0 ? pages[currentIdx] : undefined;
+  const currentNum = currentEntry ? Number(currentEntry.label) : NaN;
+  const findStep = (dir: -1 | 1): PageLink | undefined => {
+    if (!Number.isFinite(currentNum)) return undefined;
+    const want = currentNum + dir;
+    return pages.find((p) => !p.current && Number(p.label) === want);
+  };
+
+  const prev = findStep(-1);
+  const next = findStep(1);
+
+  /*
+   * 可见文字用 PREV / NEXT，与版面里其余英文小标题（BING — 检索 的刊名式标识、
+   * 等宽字体的页码）保持同一种语气：短、克制、不与中文正文抢注意力。
+   * 无障碍标签仍用中文 —— 读屏念「上一页」比念「PREV」更容易理解。
+   */
+  steps.append(
+    buildStep(prev, '上一页', 'se-page-prev', 'PREV'),
+    buildStep(next, '下一页', 'se-page-next', 'NEXT'),
+  );
+
+  nav.appendChild(steps);
   return nav;
+}
+
+/**
+ * 造一个「上一页 / 下一页」控件。
+ *
+ * 目标不存在时（首页的上一页、末页的下一页）渲染为 `<span>` 而非禁用的 `<a>`：
+ * 禁用链接仍会进 Tab 序列、也会被读屏软件念成「链接」，
+ * 而这里它压根不是可去的地方。
+ */
+function buildStep(
+  target: PageLink | undefined,
+  ariaLabel: string,
+  className: string,
+  text: string,
+): HTMLElement {
+  if (!target) {
+    const dim = document.createElement('span');
+    dim.className = `se-page-step se-page-step-off ${className}`;
+    dim.setAttribute('aria-disabled', 'true');
+    dim.textContent = text;
+    return dim;
+  }
+
+  const link = document.createElement('a');
+  link.className = `se-page-step ${className}`;
+  link.href = target.href ?? '#';
+  link.textContent = text;
+  link.setAttribute('aria-label', ariaLabel);
+  return link;
 }
 
 
