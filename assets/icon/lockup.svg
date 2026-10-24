@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 197 40" width="197" height="40" role="img" aria-labelledby="t">
+  <title id="t">dotSearch</title>
+  <g transform="translate(-2.5 4)">
+    <g fill="#111111">
+      <rect x="2.5" y="3.5" width="27" height="5.5"/>
+      <rect x="2.5" y="14.5" width="15.5" height="4"/>
+      <rect x="2.5" y="23" width="12" height="5.5"/>
+    </g>
+    <circle cx="25.1" cy="16.25" r="4.4" fill="#E30613"/>
+  </g>
+  <text x="43.5" y="32" font-family="Helvetica Neue, Helvetica, Arial, sans-serif" font-size="34" font-weight="500" letter-spacing="-0.4"><tspan fill="#111111">dot</tspan><tspan fill="#E30613">Search</tspan></text>
+</svg>

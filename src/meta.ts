@@ -126,14 +126,34 @@ export const ARTIFACT = artifactFor();
 /** 项目主页（GitHub 仓库），三处 URL 都由它派生 */
 const REPO = 'https://github.com/alt021/dotSearch';
 
+/**
+ * 仓库内文件的直链前缀。
+ *
+ * 与 REPO 分开列而不是从它拼：`raw.githubusercontent.com` 与 `github.com`
+ * 是两个域，路径结构也不同（前者没有 `/blob/main` 这一段）。
+ * 产物地址与图标地址都从这里派生，换仓库名只需改这一处。
+ */
+const RAW = 'https://raw.githubusercontent.com/alt021/dotSearch/main';
+
 export const META = {
   namespace: REPO,
   homepage: REPO,
   supportURL: `${REPO}/issues`,
   /** 正式发布地址（推到 GitHub 后生效） */
-  downloadURL: (artifact: string) =>
-    `https://raw.githubusercontent.com/alt021/dotSearch/main/dist/${artifact}`,
-  icon: 'https://www.bing.com/sa/simg/bing_p_rr_teal_min.ico',
+  downloadURL: (artifact: string) => `${RAW}/dist/${artifact}`,
+  /**
+   * 脚本图标（脚本管理器的列表里显示的那一枚）。
+   *
+   * 早期借用了必应自己的青色 favicon —— 于是「脚本列表里的图标」与
+   * 「页头品牌」是两套互不相干的视觉，页头是红方块、图标却是必应的。
+   * 现在统一为项目自己的 mark：纯黑 + 瑞士红，透明底，无底板。
+   *
+   * 指向仓库内的 `assets/icon/dotsearch.svg`。与 @downloadURL 不同，
+   * 这个文件**是源码、会随仓库提交**，所以推送后即可取到；
+   * 深色底用的反白版是 `dotsearch-reverse.svg`（脚本管理器侧没有深色变体这个说法，
+   * 故头部只用正版）。
+   */
+  icon: `${RAW}/assets/icon/dotsearch.svg`,
   runAt: 'document-start',
   noframes: true,
 } as const;

@@ -1,4 +1,9 @@
-# dotSearch 搜索优化脚本
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/icon/lockup-dark.svg">
+    <img src="assets/icon/lockup.svg" width="260" alt="dotSearch">
+  </picture>
+</p>
 
 全面增强Web搜索体验
 
