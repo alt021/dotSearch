@@ -3,8 +3,8 @@
     "name": "必应 + dotSearch",
     "author": "dotSearch",
     "example": "https://www.bing.com/search?q=test",
-    "url": "^https?://(www|cn)\\.bing\\.com/search",
-    "nextLink": "#se-source .sb_pagN, #se-source .sb_pagNext, #se-source a[aria-label=\"下一页\"]",
+    "url": "^https?://([a-z0-9-]+\\.)?bing\\.com/search",
+    "nextLink": "#se-source .sb_pagN, #se-source .sb_pagNext, #se-source a[aria-label=\"下一页\"], #se-source a[href*=\"first=\"]",
     "pageElement": "#b_results"
   }
 ]

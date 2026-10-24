@@ -408,6 +408,26 @@ body.se-stripped > header {
   letter-spacing: -0.01em;
 }
 
+/*
+ * 「已排除」标签必须与标题文字**同一行**。
+ *
+ * 结构是 `<h2 class="se-title"><span class="se-tag">已排除</span><a class="se-link">标题</a></h2>`，
+ * 两者本来就在同一行内自然排列。但只要标题锚点被算成块级
+ * （原站那种 `h2 a` 一类的通用规则就会这么做），标签就会被挤到单独一行。
+ *
+ * 这里显式钉住两者的 display：
+ *   - 只写**我们自己的类名**，不波及原站或第三方脚本的样式；
+ *   - 用 !important 是因为要压过原站通用规则 —— 而这两个元素的结构
+ *     本来就是行内排列，钉死不会带来副作用。
+ */
+.se-title .se-tag {
+  display: inline-block !important;
+}
+
+.se-title .se-link {
+  display: inline !important;
+}
+
 /* .se-link 的排版、悬停与聚焦规则统一在层序段落中定义 */
 
 .se-snippet {
@@ -548,26 +568,35 @@ body.se-stripped > header {
   #se-root {
     padding-left: 0.875rem;
     padding-right: 0.875rem;
+    /* 明确按内容盒计算：padding 不该把根容器顶出视口 */
+    box-sizing: border-box;
   }
 
   /*
-   * 两列并一列：序号成为正文上方的一行。
+   * 序号与内容保持**同一行**（与桌面版式一致），只把序号列收窄。
    *
-   * 用 grid 的「单列 + 自动行」而不是删掉序号 ——
-   * 序号是「第几项」的版面标记，去掉会丢失信息。
+   * 手机上没有横向余量分给桌面那个 3.5rem 的空列；
+   * 1.6rem 够放下两位数，正文因此能多拿回约 30px。
+   *
+   * 基线对齐让序号与右栏首行（来源地址，见 buildResultItem 的
+   * cite → title → snippet 顺序）落在同一条线上，而不是悬在行顶。
    */
   .se-item {
-    grid-template-columns: 1fr;
-    gap: 0.35rem 0;
-  }
-
-  /* 序号靠左独立成行；行高压紧，避免在正文上方吃掉一整行高度 */
-  .se-num {
-    line-height: 1.2;
+    grid-template-columns: 1.6rem 1fr;
+    gap: 0 0.4rem;
+    align-items: baseline;
   }
 
   /* 分页：隐藏页码列表，显示上/下一页 */
   .se-pagination-pages {
+    display: none;
+  }
+
+  /*
+   * 页码列表被隐藏、上下页又没有目标时，整行不占位 ——
+   * 否则页面底部会留下一条规则线加一块空白，什么也没有。
+   */
+  .se-pagination-empty {
     display: none;
   }
 
@@ -576,6 +605,9 @@ body.se-stripped > header {
     align-items: stretch;
     gap: 0.75rem;
     width: 100%;
+    /* 行宽由内容盒决定，避免任何外部宽度把整行推出去 */
+    box-sizing: border-box;
+    max-width: 100%;
   }
 
   /*
@@ -588,6 +620,9 @@ body.se-stripped > header {
    */
   .se-page-step {
     flex: 1 1 0;
+    /* flex 子项默认 min-width:auto，内容一长就顶出去；显式允许收缩 */
+    min-width: 0;
+    box-sizing: border-box;
     min-height: 2.75rem;
     display: flex;
     align-items: center;

@@ -83,6 +83,15 @@ export const MENU_SLOT_CLASS = 'se-menu-slot';
 export const SOURCE_ID = 'se-source';
 
 /**
+ * 列表被整表重建后派发的事件。
+ *
+ * 过滤规则改动会清空并重画 `.se-item`，于是永页机此前追加的页
+ * 会一并消失（重建只基于首次重写时的结果）。协同模块在收到本事件后
+ * 重新采集一次数据源即可把它们补回来 —— 数据源里内容还在。
+ */
+export const RESULTS_RERENDERED_EVENT = 'dotsearch:results-rerendered';
+
+/**
  * 结果列表容器 id。
  * 过滤设置改动后按此定位列表整表重建。
  */
@@ -90,6 +99,64 @@ export const LIST_ID = 'se-list';
 
 /** 缓存本次重写时的解析结果，供过滤规则变化后重建列表 */
 let lastSearchResults: SearchResult[] = [];
+
+/**
+ * 每页条数的兜底值。
+ *
+ * 只在「偏移量差推不出、当前页条数也拿不到」时才会用到 ——
+ * 必应桌面版是 10，手机版实测是 8，所以这个常量不能当默认假设立场：
+ * 真正的来源是 `detectPageSize()` 的偏移差与 `sizeHint`（当前页条数）。
+ */
+const DEFAULT_PAGE_SIZE = 10;
+
+/** 页码上限，避免异常数据撑爆版面 */
+const MAX_PAGE_COUNT = 50;
+
+/**
+ * 当前页的分页参数。由 `extractPaginationLinks()` 在重写时写入，
+ * 序号与页头统计共用这一份，避免两处各算一遍而产生偏差。
+ */
+let pageSize = DEFAULT_PAGE_SIZE;
+let pageNumber = 1;
+
+/**
+ * 当前页第一条第「全局序号」（0-based）。
+ *
+ * 必应第二页（`first=11`，每页 10 条）的第一条实际是第 11 条结果，
+ * 序号就该从 11 开始 —— 而不是重新从 01 数。
+ * 早期版本让每页都从 01 开始，翻到第二页时序号与结果的实际位置脱节。
+ */
+function pageStartIndex(): number {
+  return (pageNumber - 1) * pageSize;
+}
+
+/** 供协同模块给追加内容续号用 */
+export function getResultStartIndex(): number {
+  return pageStartIndex();
+}
+
+/**
+ * 列表里已加载到第几页（用于页头「第 N 页」）。
+ *
+ * 永页机会把后续几页拼进同一个列表，所以这里按**已渲染条数**推算，
+ * 而不是只看 URL 的 first：拼到第 2 页时条数到了 20，页号自然变成 2。
+ */
+function loadedPageNumber(total: number): number {
+  if (total <= 0) return pageNumber;
+  return Math.floor((pageStartIndex() + total - 1) / pageSize) + 1;
+}
+
+/**
+ * 页头统计文案。
+ *
+ * 手机上（以及永页机拼接之后）用户看不到页码控件，
+ * 光有「找到 N 条结果」无从判断自己在第几页 —— 故附上页号。
+ * 第 1 页保持原样，不加多余信息。
+ */
+function statText(total: number): string {
+  const page = loadedPageNumber(total);
+  return page > 1 ? `找到 ${total} 条结果 · 第 ${page} 页` : `找到 ${total} 条结果`;
+}
 
 /**
  * 按当前过滤规则重建整个结果列表。
@@ -107,8 +174,19 @@ export function rerenderResults(): boolean {
 
   const rules = getRules();
   list.textContent = '';
-  list.append(...buildResultItems(lastSearchResults, 0, rules));
+  list.append(...buildResultItems(lastSearchResults, pageStartIndex(), rules));
   log.info(`已按 ${rules.length} 条过滤规则重建列表`);
+
+  /*
+   * 通知协同模块补采。
+   *
+   * 重建只覆盖「首次重写时」的结果，永页机后来追加的页不在其中；
+   * 而它们仍躺在数据源里，重新采一次就能回到列表末尾。
+   * 用事件而不是直接 import：pagetual-bridge 已经依赖本模块，
+   * 反向依赖会形成循环。
+   */
+  document.dispatchEvent(new CustomEvent(RESULTS_RERENDERED_EVENT));
+
   return true;
 }
 
@@ -167,7 +245,11 @@ export const stripToResults: Feature = {
     const rendered = document.querySelector('.se-pagination');
     if (rendered) return false; // 分页在，状态完整
     // 页面上没有分页，看原站是否具备分页可供提取
-    const source = extractPaginationLinks(engine.searchForm.param);
+    // （同样传结果条数：每页条数推错会漏判「本该有分页」）
+    const source = extractPaginationLinks(
+      engine.searchForm.param,
+      document.querySelectorAll(engine.resultItemSelector).length,
+    );
     return source.length > 0;
   },
 
@@ -199,7 +281,7 @@ export const stripToResults: Feature = {
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
-    const pages = extractPaginationLinks(engine.searchForm.param);
+    const pages = extractPaginationLinks(engine.searchForm.param, results.length);
 
     /*
      * 诊断信息必须在清空 DOM **之前**采集。
@@ -414,8 +496,8 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   // 条数记在 dataset 上：自动翻页加载新页后条数会变，
   // 失焦还原时需按「当前」条数显示，不能依赖构建时捕获的闭包值
   stat.dataset.count = String(count);
-  // 默认显示结果数；进入编辑态后改为提示回车提交
-  stat.textContent = `找到 ${count} 条结果`;
+  // 默认显示结果数（第 2 页起附带页号）；进入编辑态后改为提示回车提交
+  stat.textContent = statText(count);
 
   form.append(input, stat);
   form.addEventListener('submit', (event) => {
@@ -436,8 +518,8 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   // 失焦立即还原：舍弃用户对该标题的全部改动
   input.addEventListener('blur', () => {
     input.value = query;
-    // 按 dataset 上的当前条数还原，自动翻页追加后数字才是对的
-    stat.textContent = `找到 ${stat.dataset.count ?? count} 条结果`;
+    // 按 dataset 上的当前条数还原，自动翻页追加后数字（与页号）才是对的
+    stat.textContent = statText(Number(stat.dataset.count ?? count));
   });
 
   head.appendChild(form);
@@ -455,7 +537,11 @@ export function updateResultCount(total: number): void {
   if (!stat) return;
   stat.dataset.count = String(total);
   if (document.activeElement?.classList.contains('se-query')) return;
-  stat.textContent = `找到 ${total} 条结果`;
+  /*
+   * 页号随条数一起变：永页机每拼进一页，条数跨过页边界，
+   * 「第 N 页」自动 +1 —— 用户据此知道自己已经读到第几页。
+   */
+  stat.textContent = statText(total);
 }
 
 /** 构建结果列表 */
@@ -463,7 +549,12 @@ function buildResultList(results: SearchResult[]): HTMLElement {
   const list = document.createElement('ol');
   list.className = 'se-list';
   list.id = LIST_ID;
-  list.append(...buildResultItems(results, 0));
+  /*
+   * 序号从**当前页的全局起点**开始，而不是 0。
+   * 第 2 页（first=11、每页 10 条）的第一条是第 11 条结果，
+   * 标题栏写的也是「第 2 页」—— 序号再从 01 数就与页面对不上了。
+   */
+  list.append(...buildResultItems(results, pageStartIndex()));
   return list;
 }
 
@@ -789,11 +880,8 @@ const FIRST_PARAM_RE = /[?&]first=(\d+)/g;
 export const PAGINATION_HINT_SELECTOR =
   'a[href*="first="], .b_pag a, .sb_pagF a, .sb_pag a';
 
-/** 单页结果数（Bing 默认 10）；由偏移量差值自动校正 */
-const DEFAULT_PAGE_SIZE = 10;
-
-/** 页码上限，避免异常数据撑爆版面 */
-const MAX_PAGE_COUNT = 50;
+/* 每页条数（DEFAULT_PAGE_SIZE）与页码上限（MAX_PAGE_COUNT）在文件顶部定义：
+   序号偏移与页头统计也要用，放在这里会导致模块求值时访问未初始化的 const。 */
 
 /**
  * 等待分页线索出现（分页常晚于结果容器渲染）。
@@ -859,8 +947,21 @@ function collectPageOffsets(): number[] {
   return [...offsets].filter((n) => n >= 1).sort((a, b) => a - b);
 }
 
-/** 由偏移量差值推断每页条数（Bing 默认 10，但可被参数改变） */
-function detectPageSize(offsets: number[]): number {
+/**
+ * 由偏移量差值推断每页条数。
+ *
+ * @param sizeHint 当前页**实际渲染出的结果条数**。只在无法从偏移量差值
+ *   推断时启用 —— 见下方说明。
+ *
+ * ⚠️ 不能只靠偏移量。手机端必应一页只给 8 条，而分页控件往往只暴露
+ * 一个 `first=`（例如只有「下一页」），偏移量集合里没有相邻差，
+ * 于是这里会回退到默认的 10 —— 而 10 是错的：
+ *   first=9、真实每页 8 条 → floor(9/10)+1 = 1（算成第 1 页！）
+ *   first=9、每页 8 条       → floor(9/8)+1  = 2 ✓
+ * 页号错一位，序号偏移跟着错，用户看到的就是「第二页又从 01 开始」。
+ * 当前页条数正好等于每页条数（首页满页时），用它兜底最可靠。
+ */
+function detectPageSize(offsets: number[], sizeHint = 0): number {
   // 相邻偏移量之差即每页条数；取最小正值以兼容不连续的偏移集合
   const diffs: number[] = [];
   for (let i = 1; i < offsets.length; i++) {
@@ -870,15 +971,23 @@ function detectPageSize(offsets: number[]): number {
     const d = cur - prev;
     if (d > 0) diffs.push(d);
   }
-  return diffs.length > 0 ? Math.min(...diffs) : DEFAULT_PAGE_SIZE;
+  if (diffs.length > 0) return Math.min(...diffs);
+  if (sizeHint > 0) return sizeHint;
+  return DEFAULT_PAGE_SIZE;
 }
 
 /** 第 1 页为 1；URL 不带 first= 即第 1 页 */
-function currentPageNumber(pageSize: number): number {
+function currentPageNumber(size: number): number {
   const raw = new URL(location.href).searchParams.get('first');
   const offset = raw === null ? 1 : Number(raw);
   if (!Number.isFinite(offset) || offset <= 1) return 1;
-  return Math.floor((offset - 1) / pageSize) + 1;
+  /*
+   * 与生成链接时同一套换算（见 offsetToPage 的说明）：
+   * 必应的 first= 有 1-based（11/21）与 0-based（10/20）两种约定，
+   * floor(offset / size) + 1 对两者都成立。
+   * 早前这里写的是 floor((offset-1)/size)+1，0-based 会少算一页。
+   */
+  return offsetToPage(offset, size);
 }
 
 /*
@@ -989,12 +1098,18 @@ function collectNumericPageHints(): number[] {
  * （结果不足一页，或原站未提供任何翻页线索）。
  *
  * @param queryParam 引擎的搜索词参数名；隐私模式下净化分页基址时要用
+ * @param sizeHint 当前页实际结果条数，用于在偏移量不足时推断每页条数
  */
-function extractPaginationLinks(queryParam = 'q'): PageLink[] {
+function extractPaginationLinks(queryParam = 'q', sizeHint = 0): PageLink[] {
   const offsets = collectPageOffsets();
-  const pageSize = detectPageSize(offsets);
+  /*
+   * 写入模块级的 pageSize / pageNumber：序号偏移与页头「第 N 页」
+   * 都依赖这两个值，重写时只算这一次，两处共用同一份。
+   */
+  pageSize = detectPageSize(offsets, sizeHint);
   const base = new URL(location.href);
   const current = currentPageNumber(pageSize);
+  pageNumber = current;
 
   /*
    * 总页数按优先级推断，取各来源的最大值（偏保守，漏页比多页干扰小）：
@@ -1115,13 +1230,78 @@ function buildPagination(pages: PageLink[]): HTMLElement {
    * 等宽字体的页码）保持同一种语气：短、克制、不与中文正文抢注意力。
    * 无障碍标签仍用中文 —— 读屏念「上一页」比念「PREV」更容易理解。
    */
-  steps.append(
-    buildStep(prev, '上一页', 'se-page-prev', 'PREV'),
-    buildStep(next, '下一页', 'se-page-next', 'NEXT'),
-  );
+  /*
+   * 优先用**原站自己的**「上一页 / 下一页」链接。
+   *
+   * 只靠按页码推算的相邻页是不够的：手机端的翻页控件常常由脚本驱动、
+   * 或换了参数形式，页码推算会得不到「相邻页」，于是两个按钮都没有目标
+   * —— 用户看到的就是「PREV / NEXT 不可用」。
+   * 原站链接是真实目标，有就直接用，比推算可靠。
+   *
+   * 重写只是把原站 DOM 搬进了 `#se-source`（未删除），节点仍在文档里，
+   * 所以这里限定在该容器内查找 —— 避免命中我们自己上一次渲染的按钮。
+   */
+  const prevHref = prev?.href ?? findOriginalStep('prev')?.href ?? null;
+  const nextHref = next?.href ?? findOriginalStep('next')?.href ?? null;
 
-  nav.appendChild(steps);
+  /*
+   * 两个方向都没有目标时才不渲染这一行。
+   *
+   * 典型场景是结果只有一页：既没有相邻页，原站也没有翻页控件。
+   * 照常渲染会得到两个灰色空按钮 —— 那才是「两个都不可用」的来源。
+   * 桌面端由页码列表承担分页显示，不受影响。
+   */
+  if (prevHref || nextHref) {
+    steps.append(
+      buildStep(prevHref, '上一页', 'se-page-prev', 'PREV'),
+      buildStep(nextHref, '下一页', 'se-page-next', 'NEXT'),
+    );
+    nav.appendChild(steps);
+  } else {
+    /*
+     * 窄屏下 nav 会只剩「已被 display:none 的页码列表」，
+     * 于是一条规则线加 3.5rem 外边距之下什么也没有。
+     * 加个类让窄屏把整行收掉（桌面仍显示当前页标记）。
+     */
+    nav.classList.add('se-pagination-empty');
+  }
+
   return nav;
+}
+
+/**
+ * 在隐藏数据源里找原站自己的「上一页 / 下一页」锚点。
+ *
+ * 三级回退：引擎的固定类名 → 语义化 rel → 无障碍标签。
+ * 都取不到返回 null，表示这一页确实没有该方向的翻页。
+ */
+function findOriginalStep(dir: 'prev' | 'next'): HTMLAnchorElement | null {
+  const scope = document.getElementById(SOURCE_ID) ?? document;
+  const selectors =
+    dir === 'next'
+      ? [
+          '.sb_pagN[href]',
+          'a[rel="next"][href]',
+          'a[aria-label="下一页"][href]',
+          'a[aria-label="Next"][href]',
+          'a[title="下一页"][href]',
+        ]
+      : [
+          '.sb_pagP[href]',
+          'a[rel="prev"][href]',
+          'a[aria-label="上一页"][href]',
+          'a[aria-label="Previous"][href]',
+          'a[title="上一页"][href]',
+        ];
+  for (const selector of selectors) {
+    // 排除我们自己渲染的按钮：重写中途 `#se-source` 可能还没建立，
+    // 此时会退到整个文档上查找，别把上一轮的 nav 当成原站链接。
+    const hit = Array.from(scope.querySelectorAll<HTMLAnchorElement>(selector)).find(
+      (a) => !a.closest(`#${ROOT_ID}`),
+    );
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /**
@@ -1132,12 +1312,12 @@ function buildPagination(pages: PageLink[]): HTMLElement {
  * 而这里它压根不是可去的地方。
  */
 function buildStep(
-  target: PageLink | undefined,
+  href: string | null,
   ariaLabel: string,
   className: string,
   text: string,
 ): HTMLElement {
-  if (!target) {
+  if (!href) {
     const dim = document.createElement('span');
     dim.className = `se-page-step se-page-step-off ${className}`;
     dim.setAttribute('aria-disabled', 'true');
@@ -1147,7 +1327,7 @@ function buildStep(
 
   const link = document.createElement('a');
   link.className = `se-page-step ${className}`;
-  link.href = target.href ?? '#';
+  link.href = href;
   link.textContent = text;
   link.setAttribute('aria-label', ariaLabel);
   return link;
