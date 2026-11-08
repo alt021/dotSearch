@@ -1,6 +1,6 @@
 {
   "name": "dotsearch",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "增强搜索引擎用户体验的 UserScript（当前以 Bing 为主，逐步扩展 Google / 百度）",
   "type": "module",
   "private": true,
@@ -21,6 +21,7 @@
     "verify:settings": "node scripts/build-engine.mjs bing --dev && esbuild src/engines/bing.ts --bundle --format=esm --platform=node --outfile=.build/bing-unit.mjs --log-level=silent && node scripts/verify-settings.mjs",
     "verify:responsive": "node scripts/build-engine.mjs bing --dev && node scripts/verify-responsive.mjs",
     "verify:pagination": "node scripts/build-engine.mjs bing --dev && node scripts/verify-pagination.mjs",
+    "verify:session": "node scripts/build.mjs --dev && node scripts/verify-session.mjs",
     "verify:live": "node scripts/build.mjs --dev && node scripts/verify-live.mjs",
     "verify:start": "node scripts/build.mjs --dev && node scripts/verify-live.mjs --document-start",
     "verify:intl": "node scripts/build.mjs --dev && node scripts/verify-live.mjs --proxy --document-start",
