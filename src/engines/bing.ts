@@ -18,9 +18,9 @@ import { log } from '../core/env.js';
  *   www3 / www5 / www6 302 回 cn.bing.com 首页，构不成入口
  *   m / global         跳回 cn.bing.com/search
  *
- * 理论上的例外是移动站（`m.` 前缀）：那套 DOM 完全不同。
- * 但即使误判也没有破坏性 —— 找不到结果容器时重写会直接退出，
- * 不触碰页面（见 strip-to-results 里的容器判空）。
+ * 本脚本只支持桌面版。移动站（`m.` 前缀）那套 DOM 完全不同，
+ * 不在适配范围内；误入时找不到结果容器，重写会直接退出、不触碰页面
+ * （见 strip-to-results 里的容器判空）。
  */
 function isBingHost(hostname: string): boolean {
   return hostname === 'bing.com' || hostname.endsWith('.bing.com');
@@ -109,7 +109,7 @@ export const bing: EngineAdapter = {
 
   captureSession() {
     try {
-      session = readSession();
+      session = readTopBarSession() ?? UNKNOWN_SESSION;
       log.info(`必应会话：${session.signedIn ? `已登录（${session.name ?? '名未知'}）` : '未登录'}`);
     } catch (err) {
       // 采集失败不影响主流程：按未登录处理
@@ -209,10 +209,7 @@ export const bing: EngineAdapter = {
  *
  * ## 为什么必须单独「先采集、后使用」
  *
- * 判据全部来自必应顶栏（`#id_a` / `#id_l` / `#id_p`），
- * 而顶栏会被「重写结果页」功能整个清掉。
- * 又因为菜单是在页面重建**之后**才挂载的，
- * 那时顶栏早已不存在。
+ * 判据在顶栏（`#id_a` / `#id_l` / `#id_p`）里，而顶栏会被重写清掉，
  * 所以必须在清空 DOM 之前采集一次（strip-to-results 负责调用 captureSession）。
  *
  * ## 判据（实测未登录页面的真实结构）
@@ -230,15 +227,15 @@ export const bing: EngineAdapter = {
  * 因此「已登录」的最强信号是**头像图片被显示出来**（`#id_p` 不再 display:none）；
  * 其次是头像/按钮文案不再是「登录」而是用户名。
  *
- * 注意 `window._G.SUIH` **不可用**：未登录时它同样有值（会话哈希），
- * 与身份无关，实测已确认。
- *
  * ## 判不准时的取舍
  *
- * 两个信号都不成立时，按「未登录」处理。
+ * 顶栏判据缺失或含义不明时，按「未登录」处理。
  * 这样最坏情况是已登录用户被送去登录端点，
  * 而必应对已登录用户会直接放行 —— 不会卡在登录页；
  * 反之若误判为已登录，会让未登录用户跳到微软账户页，更突兀。
+ *
+ * 注意 `window._G.SUIH` **不可用**：未登录时它同样有值（会话哈希），
+ * 与身份无关，实测已确认。
  */
 
 /** 未采集到任何信息时的结果 */
@@ -275,15 +272,21 @@ function signInUrl(): string {
   );
 }
 
-/** 从 DOM 读出会话状态 */
-function readSession(): EngineSession {
+/**
+ * 从桌面顶栏读出会话状态。
+ * 顶栏判据缺失或含义不明时返回 null，调用方按未登录处理。
+ */
+function readTopBarSession(): EngineSession | null {
   const avatar = document.getElementById('id_a');
-  const avatarLabel = (avatar?.getAttribute('aria-label') ?? '').trim();
-
   const submit = document.querySelector<HTMLInputElement>('#id_l input[type="submit"]');
+  const profile = document.getElementById('id_p');
+
+  // 顶栏还没渲染完时一个都没有
+  if (!avatar && !submit && !profile) return null;
+
+  const avatarLabel = (avatar?.getAttribute('aria-label') ?? '').trim();
   const submitLabel = (submit?.value ?? submit?.getAttribute('aria-label') ?? '').trim();
 
-  const profile = document.getElementById('id_p');
   const profileStyle = profile?.getAttribute('style') ?? '';
   const profileShown = profile !== null && !/display\s*:\s*none/i.test(profileStyle);
 
@@ -303,7 +306,15 @@ function readSession(): EngineSession {
     return { signedIn: true, name: name === '' ? null : name };
   }
 
-  return { signedIn: false, name: null };
+  /*
+   * 明确写着「登录」才算未登录；两处文案都为空时无法下结论，
+   * 返回 null，由调用方按未登录处理。
+   */
+  if (SIGN_IN_RE.test(avatarLabel) || SIGN_IN_RE.test(submitLabel)) {
+    return { signedIn: false, name: null };
+  }
+
+  return null;
 }
 
 /** 取第一个非空字符串 */

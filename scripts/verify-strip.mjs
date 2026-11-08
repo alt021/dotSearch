@@ -129,9 +129,9 @@ const after = await page.evaluate(() => ({
    *   旧：原站元素必须**完全不存在**（当时是直接清空 body）
    *   新：原站元素不得出现在**可见区域**，但允许存在于隐藏数据源内
    *
-   * 之所以保留隐藏数据源，是为了与东方永页机这类自驱动的自动翻页脚本
-   * 协同 —— 它们要靠原站结构定位下一页与插入点。详见 pagetual-bridge.ts。
-   * 因此这里按「不在 #se-source 内」计数，而不是全局计数。
+   * 之所以保留隐藏数据源，是因为必应会在重写之后继续往里补分页线索
+   * （见 strip-to-results 的 watchSourcePagination）；「加载更多」靠它判断
+   * 还有没有下一页。因此这里按「不在 #se-source 内」计数，而不是全局计数。
    */
   leftovers: (() => {
     const outsideSource = (sel) =>
@@ -192,11 +192,14 @@ const after = await page.evaluate(() => ({
     isInput: document.querySelector('.se-query')?.tagName === 'INPUT',
     oldSearchBarGone: document.querySelectorAll('.se-search').length === 0,
   },
-  // 调整点 3：分页
-  pagination: {
-    count: document.querySelectorAll('.se-pagination .se-page').length,
-    current: (document.querySelector('.se-page-current')?.textContent ?? '').slice(0, 10),
-    currentTag: document.querySelector('.se-page-current')?.tagName ?? null,
+  // 调整点 3：拼页（旧页码栏必须彻底消失）
+  more: {
+    button: (document.querySelector('.se-more-button')?.textContent ?? '').trim(),
+    label: document.querySelector('.se-more-button')?.getAttribute('aria-label') ?? null,
+    hidden: document.querySelector('.se-more')?.hasAttribute('hidden') ?? null,
+    pagerCount: document.querySelectorAll(
+      '.se-pagination, .se-pagination-pages, .se-page, .se-page-current',
+    ).length,
   },
   /*
    * 调整点 4：合规链接
@@ -640,8 +643,7 @@ console.log(
     `  旧搜索框已移除=${after.search.oldSearchBarGone}`,
 );
 console.log(
-  `  3 分页：${after.pagination.count} 个` +
-    `  当前页「${after.pagination.current}」为 <${after.pagination.currentTag}>`,
+  `  3 拼页：按钮「${after.more.button}」 旧页码栏残留=${after.more.pagerCount}`,
 );
 console.log(
   `  4 合规链接残留：${after.compliance.count}（应为 0）` +
@@ -811,6 +813,11 @@ const pass =
   after.search.inMasthead &&
   after.search.oldSearchBarGone &&
   after.compliance.count === 0 &&
+  // 拼页：按钮就位，旧页码栏彻底消失
+  after.more.button === 'SHOW MORE' &&
+  after.more.label === '加载更多结果' &&
+  after.more.hidden === false &&
+  after.more.pagerCount === 0 &&
   queryState.restored &&
   queryState.hover.style === 'dashed' &&
   // 聚焦时虚线框应「不可见」：宽度归零即为不可见
@@ -847,6 +854,9 @@ for (const [k, v] of Object.entries({
   menuOk,
   inMasthead: after.search.inMasthead,
   oldSearchBarGone: after.search.oldSearchBarGone,
+  moreButton: after.more.button === 'SHOW MORE',
+  moreVisible: after.more.hidden === false,
+  pagerGone: after.more.pagerCount === 0,
   complianceLinks: after.compliance.count === 0,
   restored: queryState.restored,
   hoverStyle: queryState.hover.style === 'dashed',
@@ -868,83 +878,85 @@ console.log(pass ? '✅ 验证通过' : '❌ 验证失败');
 console.log('截图：.build/' + shot);
 
 /* ==========================================================================
-   永页机协同
+   永页机退出
    --------------------------------------------------------------------------
-   模拟东方永页机的真实行为：
-     1. 它在当前页插入**新的结果容器**（不是往原容器里追加）
-     2. 插入完成后广播 postMessage 通知外界
-   这里照做，然后断言我们的列表把新结果接了上去。
+   本脚本现在自己做拼页，必须让东方永页机停下：
+     1. 抢先置位它的单例标记 initedPagetual，让它自己的初始化直接 return；
+     2. 万一它已经在跑，移除它的界面，并把它绕过列表插入的原站结果搬走。
+   这里模拟「它已经跑起来」的最坏情况，断言兜底清理确实生效。
    ========================================================================== */
-const pagerBefore = await page.evaluate(() => {
-  const source = document.getElementById('se-source');
-  if (!source) return { ok: false, reason: '无隐藏数据源' };
+const guardBefore = await page.evaluate(() => {
+  const body = document.body;
 
-  // 构造「下一页」的容器，结构与必应一致，接在已有容器之后
-  const next = document.createElement('ol');
-  next.id = 'b_results';
-  next.innerHTML =
-    '<li class="b_algo">' +
-    '<h2><a href="https://example.com/p2-a">第二页结果甲</a></h2>' +
-    '<div class="b_attribution"><cite>example.com › p2-a</cite></div>' +
-    '<div class="b_caption"><p>这是第二页的第一条摘要。</p></div>' +
-    '</li>' +
-    '<li class="b_algo">' +
-    '<h2><a href="https://example.com/p2-b">第二页结果乙</a></h2>' +
-    '<div class="b_attribution"><cite>example.com › p2-b</cite></div>' +
-    '<div class="b_caption"><p>这是第二页的第二条摘要。</p></div>' +
-    '</li>';
-  source.appendChild(next);
+  // 它的三件可见 UI
+  for (const [id, cls] of [
+    ['pagetual-sideController', ''],
+    ['pagetual-picker', ''],
+    ['', 'pagetual_pageBar'],
+  ]) {
+    const el = document.createElement('div');
+    if (id) el.id = id;
+    if (cls) el.className = cls;
+    body.appendChild(el);
+  }
+  body.classList.add('pagetual-picker');
 
-  const items = document.querySelectorAll('.se-item').length;
-  // 永页机的正式协作接口：插入完成后广播
-  window.postMessage({ command: 'pagetual', action: 'insert' }, '*');
-  return { ok: true, items, containers: source.querySelectorAll('#b_results').length };
-});
+  // 它绕过我们的列表、直接插到页面上的原站结果条目
+  const stray = document.createElement('li');
+  stray.className = 'b_algo';
+  stray.innerHTML = '<h2><a href="https://example.com/pagetual">永页机插入的结果</a></h2>';
+  body.appendChild(stray);
 
-// 等合并窗口（200ms）走完再断言
-await page.waitForTimeout(700);
-
-const pagerAfter = await page.evaluate(() => {
-  const items = [...document.querySelectorAll('.se-item')];
   return {
-    count: items.length,
-    titles: items.map((li) => (li.querySelector('.se-link')?.textContent ?? '').trim()),
-    numbers: items.map((li) => (li.querySelector('.se-num')?.textContent ?? '').trim()),
-    stat: (document.querySelector('.se-stat')?.textContent ?? '').trim(),
-    // 新采出来的条目不得把原站节点漏到可见区
-    visibleAlgo: [...document.querySelectorAll('li.b_algo')].filter(
-      (el) => !el.closest('#se-source'),
-    ).length,
+    marker: globalThis.initedPagetual === true,
+    items: document.querySelectorAll('.se-item').length,
   };
 });
 
-console.log('=== 永页机协同 ===');
+// 等兜底清理的合并窗口（100ms）走完
+await page.waitForTimeout(600);
+
+const guardAfter = await page.evaluate(() => ({
+  sideController: document.getElementById('pagetual-sideController') !== null,
+  picker: document.getElementById('pagetual-picker') !== null,
+  pageBar: document.querySelector('.pagetual_pageBar') !== null,
+  bodyClass: document.body.classList.contains('pagetual-picker'),
+  items: document.querySelectorAll('.se-item').length,
+  strayInSource: [...document.querySelectorAll('#se-source li.b_algo')].some((el) =>
+    (el.textContent ?? '').includes('永页机插入的结果'),
+  ),
+  // 越权插入的内容不得留在可见区
+  visibleAlgo: [...document.querySelectorAll('li.b_algo')].filter(
+    (el) => !el.closest('#se-source'),
+  ).length,
+}));
+
+console.log('=== 永页机退出 ===');
+console.log(`  初始化标记 initedPagetual=${guardBefore.marker}`);
 console.log(
-  `  模拟插入：${pagerBefore.ok ? '成功' : '失败(' + pagerBefore.reason + ')'}` +
-    `  隐藏源内结果容器=${pagerBefore.containers ?? '-'}`,
+  `  界面：侧栏${guardAfter.sideController ? '仍在' : '已移除'}` +
+    ` 选择器${guardAfter.picker ? '仍在' : '已移除'}` +
+    ` 分页条${guardAfter.pageBar ? '仍在' : '已移除'}` +
+    ` body 类${guardAfter.bodyClass ? '仍在' : '已清除'}`,
 );
 console.log(
-  `  追加前 ${pagerBefore.items ?? '-'} 条 → 追加后 ${pagerAfter.count} 条` +
-    `  页头计数「${pagerAfter.stat}」`,
-);
-console.log(`  末两条：${pagerAfter.titles.slice(-2).join(' / ')}`);
-console.log(
-  `  序号续接：${pagerAfter.numbers.slice(-2).join(', ')}` +
-    `  可见区原站条目=${pagerAfter.visibleAlgo}`,
+  `  越权插入的结果：搬回隐藏源=${guardAfter.strayInSource}` +
+    `  可见区残留=${guardAfter.visibleAlgo}` +
+    `  列表条数 ${guardBefore.items} → ${guardAfter.items}`,
 );
 
-const pagerOk =
-  pagerBefore.ok &&
-  pagerAfter.count === (pagerBefore.items ?? -1) + 2 &&
-  pagerAfter.titles.includes('第二页结果甲') &&
-  pagerAfter.titles.includes('第二页结果乙') &&
-  // 序号要接着往下排，不能从 01 重来
-  pagerAfter.numbers.slice(-2).join(',') ===
-    `${String(pagerAfter.count - 1).padStart(2, '0')},${String(pagerAfter.count).padStart(2, '0')}` &&
-  pagerAfter.stat.includes(`${pagerAfter.count} 条`) &&
-  pagerAfter.visibleAlgo === 0;
+const pagetualOk =
+  guardBefore.marker &&
+  !guardAfter.sideController &&
+  !guardAfter.picker &&
+  !guardAfter.pageBar &&
+  !guardAfter.bodyClass &&
+  guardAfter.strayInSource &&
+  guardAfter.visibleAlgo === 0 &&
+  // 永页机插入的内容不能混进我们的列表
+  guardAfter.items === guardBefore.items;
 
-console.log(pagerOk ? '  ✅ 协同正确' : '  ❌ 协同不符预期');
+console.log(pagetualOk ? '  ✅ 已退出' : '  ❌ 退出不符预期');
 
 /* ==========================================================================
    结果过滤
@@ -1512,7 +1524,7 @@ await clearRulesDirect();
  * 1. **不能禁用原站（以及第三方）的样式表。**
  *    曾有一版为了修配色问题把必应样式表整体 disabled，结果：
  *      - 东方永页机（Pagetual）的侧边浮动工具条是它自己注入 CSS 渲染的，
- *        一并被禁用后完全走样；
+ *        一并被禁用后完全走样（永页机现在被主动停用，但第三方 CSS 仍可能在页面上）；
  *      - 只靠原站 CSS 隐藏的浮层全部显形，`overlay-dimmer`
  *        变成一个铺满视口、pointer-events:auto 的遮罩，整页点不动。
  *    所以现在断言「一个原站样式表都不许被禁用」。
@@ -2099,5 +2111,7 @@ console.log(settingsOk ? '  ✅ 附加设置与净化链接符合预期' : '  �
 await browser.close();
 server.close();
 process.exit(
-  pass && pagerOk && filterOk && crossOriginOk && signedInOk && accountVisibleOk && settingsOk ? 0 : 1,
+  pass && pagetualOk && filterOk && crossOriginOk && signedInOk && accountVisibleOk && settingsOk
+    ? 0
+    : 1,
 );

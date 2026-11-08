@@ -90,8 +90,8 @@ export interface EngineAdapter {
   /**
    * 采集当前页面的账户会话状态。
    *
-   * ⚠️ **必须在重写清空 DOM 之前调用**（由 strip-to-results 负责）：
-   * 判据通常位于顶栏，而顶栏会被重写移除。
+   * ⚠️ **必须在重写清空 DOM 之前完成**（由 strip-to-results 负责）：
+   * 判据位于顶栏，而顶栏会被重写移除。
    */
   captureSession?(): void;
 

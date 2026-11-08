@@ -278,7 +278,7 @@ for (const c of CASES) {
 
     await waitRoot();
     // 稳定一小段再确认：期间若发生导航，重写好的 DOM 会随文档一起消失。
-    // 这一段同时充当菜单、永页机桥接所需的稳定时间。
+    // 这一段同时充当菜单与拼页按钮所需的稳定时间。
     await page.waitForTimeout(500);
     if ((await state())?.root) {
       rooted = true;
@@ -310,10 +310,13 @@ for (const c of CASES) {
    */
   const out = await page
     .evaluate(() => ({
-      pagRendered: document.querySelectorAll('.se-pagination .se-page').length,
+      moreText: (document.querySelector('.se-more-button')?.textContent ?? '').trim(),
+      moreHidden: document.querySelector('.se-more')?.hasAttribute('hidden') ?? null,
+      pagerCount: document.querySelectorAll(
+        '.se-pagination, .se-pagination-pages, .se-page, .se-page-current',
+      ).length,
       rootExists: Boolean(document.getElementById('se-root')),
     resultCount: document.querySelectorAll('.se-item').length,
-    currentTag: (document.querySelector('.se-page-current') || {}).tagName || null,
     menu: (() => {
       const btn = document.querySelector('.se-menu-btn');
       const popup = document.getElementById('se-menu-popup');
@@ -478,9 +481,11 @@ for (const c of CASES) {
     panel.hasRows &&
     panel.hasPrivacySwitch;
 
-  // 原站无分页时（结果不足一页）不算失败
+  // 原站无分页时（结果不足一页）按钮允许隐藏
   const ok =
-    (src.bPag > 0 ? out.pagRendered > 0 : out.rootExists) &&
+    out.rootExists &&
+    out.pagerCount === 0 &&
+    (src.bPag > 0 ? out.moreText === 'SHOW MORE' && out.moreHidden === false : true) &&
     extraClean &&
     uncovered &&
     linkOk &&
@@ -491,7 +496,8 @@ for (const c of CASES) {
   console.log(
     `${ok ? '✅' : '❌'} ${c.label}` +
       `  原站(分页容器=${src.bPag} 结果=${src.bAlgo})` +
-      ` → 重写(分页=${out.pagRendered} 结果=${out.resultCount} 当前页=${out.currentTag})`,
+      ` → 重写(拼页="${out.moreText}" 隐藏=${out.moreHidden}` +
+      ` 旧页码栏=${out.pagerCount} 结果=${out.resultCount})`,
   );
   console.log(
     `     链接: 标题 ${out.links.linkHref}/${out.links.linkTotal} 有 href、` +

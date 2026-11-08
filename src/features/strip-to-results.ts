@@ -20,32 +20,15 @@ import { cleanAddressBar, sanitizeSearchUrl } from './privacy.js';
  * 保证每次搜索都能重新触发本脚本。
  */
 
-/** 需要保留的非结果内容 */
-const EXTRA_SELECTORS = {
-  /**
-   * 分页控件。
-   *
-   * 注意是 **class** 而非 id —— 实测 Bing 渲染为
-   * `<li class="b_pag"><nav><ul class="sb_pagF"><li><a>…</a></li></ul></nav></li>`，
-   * 不存在 id="b_pag"。用 #b_pag 永远匹配不到。
-   *
-   * 该 <li> 内首个子元素是 <link rel="stylesheet">，且其所在 <ol> 存在
-   * 提前闭合（</ol></main>）——这类非标准嵌套在 Chromium 与 Firefox 中
-   * 解析结果不同，因此**不能用后代选择器**（如 .b_pag .sb_pagF a），
-   * 必须先用 querySelectorAll('.b_pag') 定位容器、再各自查询内部，
-   * 避免跨浏览器的结构差异导致匹配失败。
-   */
-  pagination: '.b_pag',
-  /**
-   * 直答区候选。
-   *
-   * 实测 `#b_context` 是右侧栏「更多结果」的容器，
-   * 其下的 `<li class="b_ans">` 既可能承载真正的直答模块，
-   * **也可能只是「相关搜索」**(`<div class="b_rs rsExplr">`)，后者不应保留。
-   * 因此这里只做候选收集，由 pruneAnswerNodes() 逐个甄别。
-   */
-  answer: '#b_context .b_ans',
-} as const;
+/**
+ * 直答区候选。
+ *
+ * 实测 `#b_context` 是右侧栏「更多结果」的容器，
+ * 其下的 `<li class="b_ans">` 既可能承载真正的直答模块，
+ * **也可能只是「相关搜索」**(`<div class="b_rs rsExplr">`)，后者不应保留。
+ * 因此这里只做候选收集，由 pruneAnswerNode() 逐个甄别。
+ */
+const ANSWER_SELECTOR = '#b_context .b_ans';
 
 /**
  * 「相关搜索」模块的识别特征。
@@ -76,20 +59,12 @@ export const MENU_SLOT_CLASS = 'se-menu-slot';
 /**
  * 原站内容的隐藏容器 id。
  *
- * 重写时把必应原有 DOM 整体搬进这里而非删除：
- * 自动翻页脚本（东方永页机）需要靠原有结构定位下一页与插入点，
- * 而 pagetual-bridge 也要从这里采出新加载的结果。
+ * 重写时把必应原有 DOM 整体搬进这里而非删除。
+ * 它不再是给第三方翻页脚本留的锚点，而是留给本脚本自己：
+ * 必应（尤其 www 版）会在重写之后才补齐分页链接，
+ * 继续观察这份仍然活着的原站 DOM，才能知道「后面还有没有结果」。
  */
 export const SOURCE_ID = 'se-source';
-
-/**
- * 列表被整表重建后派发的事件。
- *
- * 过滤规则改动会清空并重画 `.se-item`，于是永页机此前追加的页
- * 会一并消失（重建只基于首次重写时的结果）。协同模块在收到本事件后
- * 重新采集一次数据源即可把它们补回来 —— 数据源里内容还在。
- */
-export const RESULTS_RERENDERED_EVENT = 'dotsearch:results-rerendered';
 
 /**
  * 结果列表容器 id。
@@ -104,58 +79,55 @@ let lastSearchResults: SearchResult[] = [];
  * 每页条数的兜底值。
  *
  * 只在「偏移量差推不出、当前页条数也拿不到」时才会用到 ——
- * 必应桌面版是 10，手机版实测是 8，所以这个常量不能当默认假设立场：
- * 真正的来源是 `detectPageSize()` 的偏移差与 `sizeHint`（当前页条数）。
+ * 必应桌面版是 10。真正的来源是 `detectPageSize()` 的偏移差与
+ * `sizeHint`（当前页条数）。
  */
 const DEFAULT_PAGE_SIZE = 10;
 
-/** 页码上限，避免异常数据撑爆版面 */
+/** 页码上限：只为解析异常数据设一个护栏，不代表实际能翻到这么多页 */
 const MAX_PAGE_COUNT = 50;
 
 /**
- * 当前页的分页参数。由 `extractPaginationLinks()` 在重写时写入，
- * 序号与页头统计共用这一份，避免两处各算一遍而产生偏差。
+ * 当前页的分页参数。由 `resolvePagination()` 在重写时写入。
+ *
+ * 页码栏已经移除，这些值仍有用途：
+ *   - 序号要从「当前页的全局起点」接着数；
+ *   - 「加载更多」要知道每页条数、当前页号，才能拼出下一页地址。
  */
 let pageSize = DEFAULT_PAGE_SIZE;
 let pageNumber = 1;
+
+/** 拼下一页地址所用的基址、搜索词参数与原站给出的总页数 */
+let paginationBase: URL | null = null;
+let paginationQueryParam = 'q';
+let paginationMaxPage = 1;
+
+/**
+ * 原站稍后补齐分页链接时派发。
+ *
+ * 必应（尤其 www 版）先出结果、后补分页，重写时可能只看到当前页
+ * 那一个 first= 链接。加载更多按钮据此重新判断「是否还有下一页」。
+ */
+export const PAGINATION_UPDATED_EVENT = 'dotsearch:pagination-updated';
+
+/** 重写后继续盯住数据源里的分页（见 watchSourcePagination） */
+let paginationObserver: MutationObserver | null = null;
+let paginationRefreshTimer = 0;
 
 /**
  * 当前页第一条第「全局序号」（0-based）。
  *
  * 必应第二页（`first=11`，每页 10 条）的第一条实际是第 11 条结果，
  * 序号就该从 11 开始 —— 而不是重新从 01 数。
- * 早期版本让每页都从 01 开始，翻到第二页时序号与结果的实际位置脱节。
+ * 加载更多追加的页也在「当前页起点 + 已渲染条数」上续号。
  */
 function pageStartIndex(): number {
   return (pageNumber - 1) * pageSize;
 }
 
-/** 供协同模块给追加内容续号用 */
-export function getResultStartIndex(): number {
-  return pageStartIndex();
-}
-
-/**
- * 列表里已加载到第几页（用于页头「第 N 页」）。
- *
- * 永页机会把后续几页拼进同一个列表，所以这里按**已渲染条数**推算，
- * 而不是只看 URL 的 first：拼到第 2 页时条数到了 20，页号自然变成 2。
- */
-function loadedPageNumber(total: number): number {
-  if (total <= 0) return pageNumber;
-  return Math.floor((pageStartIndex() + total - 1) / pageSize) + 1;
-}
-
-/**
- * 页头统计文案。
- *
- * 手机上（以及永页机拼接之后）用户看不到页码控件，
- * 光有「找到 N 条结果」无从判断自己在第几页 —— 故附上页号。
- * 第 1 页保持原样，不加多余信息。
- */
+/** 页头统计文案：只报已加载条数，页面不再有「第几页」的概念 */
 function statText(total: number): string {
-  const page = loadedPageNumber(total);
-  return page > 1 ? `找到 ${total} 条结果 · 第 ${page} 页` : `找到 ${total} 条结果`;
+  return `找到 ${total} 条结果`;
 }
 
 /**
@@ -175,19 +147,46 @@ export function rerenderResults(): boolean {
   const rules = getRules();
   list.textContent = '';
   list.append(...buildResultItems(lastSearchResults, pageStartIndex(), rules));
-  log.info(`已按 ${rules.length} 条过滤规则重建列表`);
-
-  /*
-   * 通知协同模块补采。
-   *
-   * 重建只覆盖「首次重写时」的结果，永页机后来追加的页不在其中；
-   * 而它们仍躺在数据源里，重新采一次就能回到列表末尾。
-   * 用事件而不是直接 import：pagetual-bridge 已经依赖本模块，
-   * 反向依赖会形成循环。
-   */
-  document.dispatchEvent(new CustomEvent(RESULTS_RERENDERED_EVENT));
-
+  log.info(`已按 ${rules.length} 条过滤规则重建列表（含已加载的 ${lastSearchResults.length} 条）`);
   return true;
+}
+
+/**
+ * 把新加载的一页追加到结果列表，并记进重建缓存。
+ *
+ * 缓存必须一起更新：过滤规则改动会按 `lastSearchResults` 整表重建，
+ * 只把节点塞进 DOM 的话，用户改一条规则，加载更多得来的一切就消失了。
+ *
+ * @returns 追加后的总条数（含被过滤规则隐藏的条目）
+ */
+export function appendResults(results: SearchResult[]): number {
+  const list = document.getElementById(LIST_ID);
+  if (!list || results.length === 0) return lastSearchResults.length;
+
+  const seen = new Set(lastSearchResults.map(resultKey));
+  const fresh = results.filter((result) => {
+    const key = resultKey(result);
+    if (key !== '' && seen.has(key)) return false;
+    if (key !== '') seen.add(key);
+    return true;
+  });
+  if (fresh.length === 0) return lastSearchResults.length;
+
+  const start = pageStartIndex() + lastSearchResults.length;
+  list.append(...buildResultItems(fresh, start));
+  lastSearchResults = lastSearchResults.concat(fresh);
+  updateResultCount(lastSearchResults.length);
+  return lastSearchResults.length;
+}
+
+/** 结果去重键：优先真实地址，回退引擎跳转地址 */
+function resultKey(result: SearchResult): string {
+  return result.url ?? result.link?.href ?? '';
+}
+
+/** 已加载（含隐藏）的结果条数 */
+export function getLoadedResultCount(): number {
+  return lastSearchResults.length;
 }
 
 /**
@@ -202,8 +201,12 @@ export function countVisibleResults(): number {
  * 把 body 现有内容整体移入隐藏容器。
  *
  * 用 appendChild 逐个搬移（而非克隆或 innerHTML 赋值）：
- * - 搬移会保留节点上已绑定的事件监听，必应脚本与 Pagetual 的引用继续有效
- * - innerHTML 赋值会重建节点，等于把别人的监听全清掉
+ * 搬移会保留节点上已绑定的事件监听，必应自己的脚本继续引用同一批节点；
+ * innerHTML 赋值会重建节点，等于把别人的监听全清掉。
+ *
+ * 保留（而不是删除）原站 DOM 还有一个明确用途：
+ * 必应会在页面加载后继续往里补分页链接，而这些链接是
+ * 「后面还有没有结果」的唯一可靠线索（见 watchSourcePagination）。
  *
  * 容器本身由 CSS 设为「absolutely positioned + 1px + overflow hidden +
  * contain: paint」：不可见、不占位，且固定定位后代会一并被裁掉。
@@ -231,26 +234,8 @@ export const stripToResults: Feature = {
     return true;
   },
 
-  /**
-   * 判断当前已改写的页面是否需要重新执行。
-   *
-   * 背景：Firefox 从 bfcache 恢复页面时，改写后的 DOM 会一并被恢复，
-   * 但原站内容完整性不保证 —— 典型表现是分页导航消失。
-   *
-   * 判据：页面上若无分页导航，但原站此刻又能提取到分页，
-   * 说明改写结果已不完整，应当重建。
-   * 若原站本就没有分页（结果不足一页），则不算异常，保持现状。
-   */
-  needsRebuild(engine) {
-    const rendered = document.querySelector('.se-pagination');
-    if (rendered) return false; // 分页在，状态完整
-    // 页面上没有分页，看原站是否具备分页可供提取
-    // （同样传结果条数：每页条数推错会漏判「本该有分页」）
-    const source = extractPaginationLinks(
-      engine.searchForm.param,
-      document.querySelectorAll(engine.resultItemSelector).length,
-    );
-    return source.length > 0;
+  dispose() {
+    stopWatchingPagination();
   },
 
   async onNavigate({ engine, query }) {
@@ -271,28 +256,16 @@ export const stripToResults: Feature = {
     }
 
     /*
-     * 关键：分页通常晚于结果容器渲染。
-     * 早期版本等到 #b_results 就立即提取分页，此时分页尚未生成，
-     * 提取为 0 → 触发「补齐第 1 页」→ 页面上只剩一个孤立的「1」。
-     * 这正是「原本 3 页只显示 1 页」的原因。
-     * 故在此短暂等待分页线索出现（拿到即返回，无分页时才等满超时）。
+     * 分页通常晚于结果容器渲染（www 版尤其明显）。
+     * 这里等一小会儿，只为让每页条数 / 总页数尽量取准 ——
+     * 它们决定「加载更多」拼出的下一页地址与初始按钮是否显示。
+     * 原站本就没有分页时等满超时，属正常情况。
      */
     await waitForPagination(1_000);
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
-    const pages = extractPaginationLinks(engine.searchForm.param, results.length);
-
-    /*
-     * 诊断信息必须在清空 DOM **之前**采集。
-     * 早前版本把探测放在清空之后，counts 恒为 0，等于没打印。
-     */
-    const hrefFirstCount = document.querySelectorAll('a[href*="first="]').length;
-    const pagProbe =
-      `a[href*=first]=${hrefFirstCount} ` +
-      `.b_pag=${document.querySelectorAll('.b_pag').length} ` +
-      `.sb_pagF=${document.querySelectorAll('.sb_pagF').length} ` +
-      `aria[第/Page]=${document.querySelectorAll('a[aria-label^="第"], a[aria-label^="Page"]').length}`;
+    resolvePagination(engine.searchForm.param, results.length);
 
     /*
      * 直答区：逐个甄别后再保留。
@@ -302,18 +275,8 @@ export const stripToResults: Feature = {
      *   3. 剔除备案号、隐私政策等合规链接
      * 清理后若已无实质内容，则整体丢弃，不留空壳。
      */
-    /*
-     * 引擎的会话状态也必须在清空前采集：
-     * 判据通常位于顶栏（必应的是 #id_a / #id_l / #id_p），
-     * 而顶栏正是被本功能清掉的。菜单在页面重建后才挂载，
-     * 那时已无从读取，故在此取一次并缓存。
-     *
-     * 引擎没实现这个钩子（例如没有账户概念）时直接跳过。
-     */
-    engine.captureSession?.();
-
     const answerNodes = Array.from(
-      document.querySelectorAll<HTMLElement>(EXTRA_SELECTORS.answer),
+      document.querySelectorAll<HTMLElement>(ANSWER_SELECTOR),
     ).filter((node) => pruneAnswerNode(node));
 
     // ---- 2. 先把新页面整个建好（纯内存操作，尚未触碰原站页面）--------------
@@ -340,26 +303,6 @@ export const stripToResults: Feature = {
       // 记下解析结果，供设置改动后重建列表（见 rerenderResults）
       lastSearchResults = results;
       main.appendChild(buildResultList(results));
-      if (pages.length > 0) {
-        main.appendChild(buildPagination(pages));
-      } else {
-        /*
-         * 分页缺失告警。分两种情况，处置方式不同：
-         *   a[href*=first]=0 → 原站本就没有分页（结果不足一页），属正常
-         *   a[href*=first]>0 → 提取逻辑失效，需要排查
-         * 故把候选链接一并打印，便于直接定位。
-         */
-        const candidates = Array.from(
-          document.querySelectorAll<HTMLAnchorElement>('a[href*="first="]'),
-        )
-          .slice(0, 8)
-          .map((a) => `"${(a.textContent ?? '').trim().slice(0, 12)}"`)
-          .join(', ');
-        log.warn(
-          `[分页缺失] 提取 0 项。清空前探测：${pagProbe}` +
-            (candidates ? ` 候选：${candidates}` : ' 无候选（该页可能本就没有分页）'),
-        );
-      }
     } else {
       main.appendChild(buildEmptyState(query));
     }
@@ -378,15 +321,17 @@ export const stripToResults: Feature = {
     // 早前版本在构建之前就禁用原站样式表，后续构建一旦出错就会留下
     // 那种残废状态 —— 这是实际踩过的坑，不是假设。
     //
-    // 搬移而不是删除，是为自动翻页脚本（东方永页机 / Pagetual）：
-    // 它是自驱动的，靠分析当前页找「下一页链接」与「主内容容器」，
-    // 早期版本直接 body.innerHTML = '' 会让它彻底失去锚点。
-    // 改为搬进隐藏容器后：
-    //   - 原 DOM 仍在文档中，Pagetual 的查询照常命中原有结构
-    //   - 它把新一页的结果插进来后，由 pagetual-bridge 采出来渲染进我们的列表
-    //   - 用户看到的仍是干净的重写页面（隐藏容器不可见、不可聚焦）
+    // 原站 DOM 搬进隐藏容器而不是删除：必应会在加载后继续往里补
+    // 分页链接，而那是判断「后面还有没有结果」的可靠线索。
     // 用 appendChild 搬移而非克隆：保留节点上的事件监听，
-    // 必应自己的脚本与 Pagetual 的对象引用都继续有效。
+    // 必应自己的脚本继续引用同一批节点。
+    /*
+     * 会话采集必须在清空 DOM 之前：判据在必应顶栏
+     * （`#id_a` / `#id_l` / `#id_p`）里，重写后就不存在了。
+     * 引擎没实现这个钩子（例如没有账户概念）时直接跳过。
+     */
+    engine.captureSession?.();
+
     const source = clipOriginalContent();
 
     document.body.className = 'se-stripped';
@@ -397,12 +342,15 @@ export const stripToResults: Feature = {
     /*
      * 这里**不再**禁用原站的样式表。
      *
-     * 那样做会连带关掉其它脚本（尤其东方永页机工具条）的样式，
+     * 那样做会连带关掉其它脚本的样式，
      * 而且会让只靠原站 CSS 隐藏的浮层全部显形（overlay-dimmer 就是全屏遮罩）。
      * 我们的控件配色改由 base.css 里的 `!important` 兜底解决，
      * 详细取舍见文件末尾「关于原站样式表」那段说明。
      */
     document.body.appendChild(root);
+
+    // 原站分页可能还在路上，重写后继续盯着（见 watchSourcePagination）
+    watchSourcePagination(source);
 
     // 隐藏结果的「单击展开」用事件委托，无需给每个条目单独绑定
     bindHiddenToggle(root);
@@ -419,7 +367,7 @@ export const stripToResults: Feature = {
     // 而 console.info 需开启调试等级才可见，跨浏览器排查时容易看不到。
     log.warn(
       `[重写完成] DOM ${before} → ${after}（其中隐藏数据源 ${hidden} 个节点），` +
-        `结果 ${results.length} 条，分页 ${pages.length} 项（${lastPaginationDebug}）`,
+        `结果 ${results.length} 条（${lastPaginationDebug}）`,
     );
 
     /*
@@ -427,12 +375,12 @@ export const stripToResults: Feature = {
      *
      * ⚠️ 必须放在**重写完成之后**（这里），不能提前到构建阶段：
      * replaceState 会触发 onUrlChange 的通知，Runner 收到后可能再跑一轮。
-     * 此刻根容器与分页都已就位，needsRebuild() 才会判为「状态完整」而跳过；
+     * 此刻根容器已就位，needsRebuild() 才会判为「状态完整」而跳过；
      * 若在构建期间就改地址，重新进入的 runAll 会看到「没有根容器」，
      * 于是两份重写并发执行，页面出现重复的 se-root。
      *
-     * 净化后分页链接也不会再带着 cvid / form 之类的参数，
-     * 因为分页基址取自 location.href（见 buildPageHref）。
+     * 净化后「加载更多」拼出的下一页地址也不会再带着 cvid / form
+     * 之类的参数，因为分页基址取自 location.href（见 buildPageHref）。
      */
     if (isPrivacyEnabled() && cleanAddressBar(engine.searchForm.param)) {
       log.info('净化链接：已去掉地址栏中的追踪参数');
@@ -493,10 +441,10 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
 
   const stat = document.createElement('p');
   stat.className = 'se-stat';
-  // 条数记在 dataset 上：自动翻页加载新页后条数会变，
+  // 条数记在 dataset 上：加载更多追加新页后条数会变，
   // 失焦还原时需按「当前」条数显示，不能依赖构建时捕获的闭包值
   stat.dataset.count = String(count);
-  // 默认显示结果数（第 2 页起附带页号）；进入编辑态后改为提示回车提交
+  // 默认显示结果数；进入编辑态后改为提示回车提交
   stat.textContent = statText(count);
 
   form.append(input, stat);
@@ -518,7 +466,7 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
   // 失焦立即还原：舍弃用户对该标题的全部改动
   input.addEventListener('blur', () => {
     input.value = query;
-    // 按 dataset 上的当前条数还原，自动翻页追加后数字（与页号）才是对的
+    // 按 dataset 上的当前条数还原，加载更多追加的数字才是对的
     stat.textContent = statText(Number(stat.dataset.count ?? count));
   });
 
@@ -529,19 +477,16 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
 /**
  * 更新页头的结果计数。
  *
- * 自动翻页脚本加载新页后，条目会变多，计数需要跟着走。
+ * 加载更多追加后条目会变多，计数需要跟着走。
  * 正在编辑查询词时不覆盖提示文案。
  */
 export function updateResultCount(total: number): void {
   const stat = document.querySelector<HTMLElement>('.se-stat');
   if (!stat) return;
   stat.dataset.count = String(total);
-  if (document.activeElement?.classList.contains('se-query')) return;
-  /*
-   * 页号随条数一起变：永页机每拼进一页，条数跨过页边界，
-   * 「第 N 页」自动 +1 —— 用户据此知道自己已经读到第几页。
-   */
-  stat.textContent = statText(total);
+  if (!document.activeElement?.classList.contains('se-query')) {
+    stat.textContent = statText(total);
+  }
 }
 
 /** 构建结果列表 */
@@ -552,7 +497,7 @@ function buildResultList(results: SearchResult[]): HTMLElement {
   /*
    * 序号从**当前页的全局起点**开始，而不是 0。
    * 第 2 页（first=11、每页 10 条）的第一条是第 11 条结果，
-   * 标题栏写的也是「第 2 页」—— 序号再从 01 数就与页面对不上了。
+   * 继续往后追加时也沿用这条全局规则；页头只报已加载条数。
    */
   list.append(...buildResultItems(results, pageStartIndex()));
   return list;
@@ -561,9 +506,9 @@ function buildResultList(results: SearchResult[]): HTMLElement {
 /**
  * 构建结果条目。
  *
- * 单独拆出来是为了支持「追加」：与自动翻页脚本（如东方永页机）
- * 协同工作时，新加载的一页要接着已有条目往后追加，
- * 而不是重建整个列表 —— 重建会丢掉用户当前的滚动位置与悬停状态。
+ * 单独拆出来是为了支持「追加」：加载更多拿到新一页后，
+ * 要接着已有条目往后追加，而不是重建整个列表 ——
+ * 重建会丢掉用户当前的滚动位置与悬停状态。
  *
  * @param startIndex 已渲染的条目数，用于续上序号
  */
@@ -681,7 +626,7 @@ export function buildResultItems(
  * 游离容器随 body 一起被回收，不留泄漏。
  */
 function hideItemBody(body: HTMLElement): void {
-  // 已隐藏过就不重复处理（重渲染与永页机追加都可能再走到这里）
+  // 已隐藏过就不重复处理（重渲染与追加都可能再走到这里）
   if (body.dataset.seHidden) return;
   body.dataset.seHidden = '1';
 
@@ -735,7 +680,7 @@ function buildFilterTag(): HTMLElement {
  * ============ 隐藏结果的单击展开 ============
  *
  * 用事件委托绑在根容器上，而不是逐条绑定：
- * 条目会被增量追加（永页机协同）与整表重建（改动过滤规则），
+ * 条目会被增量追加（加载更多）与整表重建（改动过滤规则），
  * 逐条绑定必然漏掉后来者。
  */
 const TOGGLE_BOUND = '__seFilterToggleBound__';
@@ -824,18 +769,6 @@ function applyLinkAttrs(anchor: HTMLAnchorElement, href: string | undefined): vo
   anchor.rel = 'noopener noreferrer';
 }
 
-/** 一页分页项 */
-interface PageLink {
-  /** 显示文本 */
-  label: string;
-  /** 目标地址；当前页为 null */
-  href: string | null;
-  /** 无障碍标签（如「第 2 页」） */
-  ariaLabel: string;
-  /** 是否为当前所在页 */
-  current: boolean;
-}
-
 /*
  * ============ 分页提取 ============
  *
@@ -849,16 +782,15 @@ interface PageLink {
  * 根本教训：分页的 DOM 结构、class 名、aria-label 文案，甚至「有没有
  * href」，都随语言 / 地区 / 布局 / A-B 实验而变，都不是可靠判据。
  *
- * ## 现方案：只读取「有几页」，链接自己构造
+ * ## 现方案：只读取「有几页」，下一页地址自己拼
  *
  * 唯一跨场景稳定的信息是 first= 这个结果偏移量
  * （第 N 页 = first=(N-1)*10+1）。它同时出现在：
  *   - 翻页链接的 href 里
  *   - 页面内联脚本的配置数据里
  *
- * 因此从「DOM 链接」与「整份 HTML」两处收集偏移量，推出最大页数，
- * 再用当前 URL 自己拼出每一页的地址。
- * 这样即使原站链接完全不可用，分页依然可用。
+ * 因此从「DOM 链接」与「整份 HTML」两处收集偏移量，推出每页条数与最大页数，
+ * 再用当前 URL 自己拼出下一页的地址。加载更多不依赖原站链接是否可点。
  */
 
 /** 从 URL 串中提取 first= 偏移量 */
@@ -916,12 +848,12 @@ function waitForPagination(timeout: number): Promise<void> {
 }
 
 
-/** 收集页面中出现的所有 first= 偏移量 */
-function collectPageOffsets(): number[] {
+/** 收集归集范围内出现的所有 first= 偏移量 */
+function collectPageOffsets(root: ParentNode = document): number[] {
   const offsets = new Set<number>();
 
   // 来源 1：带 first= 的翻页链接（最可靠）
-  for (const a of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+  for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
     const raw = a.getAttribute('href') ?? '';
     // 带 g 标志的正则是有状态的，复用前必须重置 lastIndex
     FIRST_PARAM_RE.lastIndex = 0;
@@ -935,7 +867,7 @@ function collectPageOffsets(): number[] {
   // 来源 2：整份 HTML 兜底，覆盖 onclick / 内联脚本 / 非 a 元素。
   // 仅在来源 1 无收获时启用，避免把无关参数误当页码。
   if (offsets.size === 0) {
-    const html = document.documentElement.innerHTML;
+    const html = root instanceof Element ? root.innerHTML : document.documentElement.innerHTML;
     FIRST_PARAM_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = FIRST_PARAM_RE.exec(html))) {
@@ -951,15 +883,16 @@ function collectPageOffsets(): number[] {
  * 由偏移量差值推断每页条数。
  *
  * @param sizeHint 当前页**实际渲染出的结果条数**。只在无法从偏移量差值
- *   推断时启用 —— 见下方说明。
+ *   推断时启用。
  *
- * ⚠️ 不能只靠偏移量。手机端必应一页只给 8 条，而分页控件往往只暴露
- * 一个 `first=`（例如只有「下一页」），偏移量集合里没有相邻差，
- * 于是这里会回退到默认的 10 —— 而 10 是错的：
- *   first=9、真实每页 8 条 → floor(9/10)+1 = 1（算成第 1 页！）
- *   first=9、每页 8 条       → floor(9/8)+1  = 2 ✓
- * 页号错一位，序号偏移跟着错，用户看到的就是「第二页又从 01 开始」。
- * 当前页条数正好等于每页条数（首页满页时），用它兜底最可靠。
+ * ⚠️ 不能只靠偏移量：分页控件有时只暴露一个 `first=`（例如只有「下一页」），
+ * 偏移量集合里没有相邻差，于是这里会回退到默认的 10 —— 若真实每页条数
+ * 不是 10，页号就会整页偏移一位，序号跟着错，用户看到的就是
+ * 「第二页又从 01 开始」。当前页满页时条数正好等于每页条数，用它兜底最可靠。
+ *
+ * ⚠️ 但条数必须**先归位到标准档位**再用：www 版会先渲染 1~9 条、
+ * 稍后才补满，直接在那一刻取用会把「每页条数」测成 9 或 1，
+ * 生成的第 3 页地址变成 `first=19`（仍落在第 2 页），后续页码整体错位。
  */
 function detectPageSize(offsets: number[], sizeHint = 0): number {
   // 相邻偏移量之差即每页条数；取最小正值以兼容不连续的偏移集合
@@ -972,8 +905,16 @@ function detectPageSize(offsets: number[], sizeHint = 0): number {
     if (d > 0) diffs.push(d);
   }
   if (diffs.length > 0) return Math.min(...diffs);
-  if (sizeHint > 0) return sizeHint;
+  if (sizeHint > 0) return snapPageSize(sizeHint);
   return DEFAULT_PAGE_SIZE;
+}
+
+/** 必应「每页结果数」的可选档位（设置页里就是这几档） */
+const PAGE_SIZE_CHOICES = [10, 20, 30, 50];
+
+/** 把实际渲染条数向上归位到标准档位（9 → 10、13 → 20） */
+function snapPageSize(sizeHint: number): number {
+  return PAGE_SIZE_CHOICES.find((n) => n >= sizeHint) ?? sizeHint;
 }
 
 /** 第 1 页为 1；URL 不带 first= 即第 1 页 */
@@ -1016,10 +957,10 @@ function pageToOffset(page: number, pageSize: number): number {
  * 这是最权威的页数来源：翻页链接自身的文本就写着「2」「3」，
  * 直接采信即可，无需从偏移量反推，避免偏移约定差异导致的偏差。
  */
-function collectRenderedPageNumbers(): number[] {
+function collectRenderedPageNumbers(root: ParentNode = document): number[] {
   const nums = new Set<number>();
 
-  for (const a of document.querySelectorAll<HTMLAnchorElement>('a')) {
+  for (const a of root.querySelectorAll<HTMLAnchorElement>('a')) {
     const href = a.getAttribute('href') ?? '';
     const text = (a.textContent ?? '').trim();
     const aria = (a.getAttribute('aria-label') ?? '').trim();
@@ -1078,9 +1019,9 @@ let lastPaginationDebug = '';
  * 用于「翻页链接由 JS 驱动、没有 href，因而不含 first=」的布局。
  * 仅作为没有偏移量线索时的替代方案，优先级最低。
  */
-function collectNumericPageHints(): number[] {
+function collectNumericPageHints(root: ParentNode = document): number[] {
   const nums = new Set<number>();
-  const scopes = document.querySelectorAll(
+  const scopes = root.querySelectorAll(
     '.b_pag, .sb_pagF, .sb_pag, nav[aria-label], nav[role="navigation"]',
   );
   for (const scope of scopes) {
@@ -1094,243 +1035,145 @@ function collectNumericPageHints(): number[] {
 }
 
 /**
- * 提取分页。返回空数组表示该页确实没有分页
- * （结果不足一页，或原站未提供任何翻页线索）。
+ * 从给定范围内读取所有分页线索。
+ *
+ * 总页数取各来源的最大值（偏保守，漏页比多页干扰小）：
+ *   1. 原站渲染出的页码数字 —— 最权威，直接写着「2」「3」
+ *   2. first= 偏移量反推 —— 覆盖页码文字非数字的情形
+ *   3. 分页容器内的纯数字 —— 覆盖链接无 href 的 JS 驱动布局
+ *
+ * `max` 只来自线索，不含当前页：重写时若分页还没渲染完，
+ * 这个值会偏小，由 watchSourcePagination 稍后补齐。
+ */
+function readPaginationHints(root: ParentNode = document): {
+  rendered: number[];
+  offsets: number[];
+  max: number;
+} {
+  const offsets = collectPageOffsets(root);
+  const rendered = collectRenderedPageNumbers(root);
+  const fromOffsets = offsets.length > 0 ? offsetToPage(Math.max(...offsets), pageSize) : 0;
+  const numericHints = rendered.length > 0 || fromOffsets > 0 ? [] : collectNumericPageHints(root);
+
+  return {
+    rendered,
+    offsets,
+    max: Math.max(
+      rendered.length > 0 ? Math.max(...rendered) : 0,
+      fromOffsets,
+      numericHints.length > 0 ? Math.max(...numericHints) : 0,
+    ),
+  };
+}
+
+/**
+ * 解析分页状态。
+ *
+ * 只读取「每页几条、当前第几页、原站说还有几页」——
+ * 页码栏已移除，页面翻页由「加载更多」接管，这里不再生成任何链接。
  *
  * @param queryParam 引擎的搜索词参数名；隐私模式下净化分页基址时要用
  * @param sizeHint 当前页实际结果条数，用于在偏移量不足时推断每页条数
  */
-function extractPaginationLinks(queryParam = 'q', sizeHint = 0): PageLink[] {
+function resolvePagination(queryParam = 'q', sizeHint = 0): void {
   const offsets = collectPageOffsets();
-  /*
-   * 写入模块级的 pageSize / pageNumber：序号偏移与页头「第 N 页」
-   * 都依赖这两个值，重写时只算这一次，两处共用同一份。
-   */
   pageSize = detectPageSize(offsets, sizeHint);
   const base = new URL(location.href);
   const current = currentPageNumber(pageSize);
   pageNumber = current;
+  paginationBase = base;
+  paginationQueryParam = queryParam;
 
-  /*
-   * 总页数按优先级推断，取各来源的最大值（偏保守，漏页比多页干扰小）：
-   *   1. 原站渲染出的页码数字 —— 最权威，直接写着「2」「3」
-   *   2. first= 偏移量反推 —— 覆盖页码文字非数字的情形
-   *   3. 分页容器内的纯数字 —— 覆盖链接无 href 的 JS 驱动布局
-   */
-  const renderedPages = collectRenderedPageNumbers();
-  const fromOffsets =
-    offsets.length > 0 ? offsetToPage(Math.max(...offsets), pageSize) : 0;
-  const numericHints =
-    renderedPages.length > 0 || fromOffsets > 0 ? [] : collectNumericPageHints();
-
-  let maxPage = Math.max(
-    current,
-    renderedPages.length > 0 ? Math.max(...renderedPages) : 0,
-    fromOffsets,
-    numericHints.length > 0 ? Math.max(...numericHints) : 0,
-  );
-
-  // 完全没有任何线索：原站该页确实没有分页
-  if (maxPage <= 1 && renderedPages.length === 0 && fromOffsets === 0) {
-    lastPaginationDebug = '无分页线索（结果可能不足一页）';
-    return [];
-  }
-
-  maxPage = Math.min(maxPage, MAX_PAGE_COUNT);
+  const hints = readPaginationHints();
+  paginationMaxPage = Math.min(Math.max(current, hints.max), MAX_PAGE_COUNT);
 
   lastPaginationDebug =
-    `页码[${renderedPages.join(',') || '-'}] ` +
-    `偏移[${offsets.join(',') || '-'}] 每页${pageSize}条 ` +
-    `当前第${current}页 总${maxPage}页`;
-
-  const pages: PageLink[] = [];
-  for (let n = 1; n <= maxPage; n++) {
-    const isCurrent = n === current;
-    pages.push({
-      label: String(n),
-      // 当前页不给链接（渲染为 span，语义上不可点）
-      href: isCurrent ? null : buildPageHref(base, n, pageSize, queryParam),
-      ariaLabel: `第 ${n} 页`,
-      current: isCurrent,
-    });
-  }
-
-  return pages;
+    hints.max === 0
+      ? `每页${pageSize}条 当前第${current}页 无后续页线索`
+      : `页码[${hints.rendered.join(',') || '-'}] ` +
+        `偏移[${hints.offsets.join(',') || '-'}] 每页${pageSize}条 ` +
+        `当前第${current}页 总${paginationMaxPage}页`;
 }
 
-/**
- * 构建分页导航。
- *
- * 同时产出两套控件，由 CSS 按视口二选一：
- *   - 页码列表（`.se-pagination-pages`）：桌面端显示，可跳到任意页
- *   - 上/下一页（`.se-pagination-steps`）：窄屏显示
- *
- * 为什么窄屏不用页码：手机上页码一行放不下，换行后每个目标又小到难以点中，
- * 而「上一页 / 下一页」是顺序阅读时真正会用的两个动作。
- * 两套都渲染、用 CSS 切换，而不是按视口判断后重建 ——
- * 那样旋转屏幕或调整窗口就得重新生成 DOM，还会打断正在阅读的位置。
- */
-function buildPagination(pages: PageLink[]): HTMLElement {
-  const nav = document.createElement('nav');
-  nav.className = 'se-pagination';
-  nav.setAttribute('aria-label', '分页');
-
-  /* ---- 一、页码列表（桌面） ---- */
-  const pageList = document.createElement('div');
-  pageList.className = 'se-pagination-pages';
-
-  for (const page of pages) {
-    if (page.current) {
-      // 当前页用 <span>，保持语义正确（不可点击的当前页不应是链接）
-      const cur = document.createElement('span');
-      cur.className = 'se-page se-page-current';
-      cur.textContent = page.label;
-      cur.setAttribute('aria-current', 'page');
-      cur.setAttribute('aria-label', page.ariaLabel);
-      pageList.appendChild(cur);
-      continue;
-    }
-
-    const link = document.createElement('a');
-    link.className = 'se-page';
-    link.href = page.href ?? '#';
-    link.textContent = page.label;
-    link.setAttribute('aria-label', page.ariaLabel);
-    pageList.appendChild(link);
-  }
-
-  nav.appendChild(pageList);
-
-  /* ---- 二、上一页 / 下一页（窄屏） ---- */
-  const steps = document.createElement('div');
-  steps.className = 'se-pagination-steps';
-
-  const currentIdx = pages.findIndex((p) => p.current);
-
-  /*
-   * 取当前页前后最近的一个可用页码。
-   *
-   * 不能简单用 pages[currentIdx ± 1]：页码列表在页数多时可能是
-   * 「1 … 4 5 6 … 20」这种省略形态，相邻项未必就是上一页/下一页。
-   * 因此按 label 的数值来判定相邻关系。
-   */
-  const currentEntry = currentIdx >= 0 ? pages[currentIdx] : undefined;
-  const currentNum = currentEntry ? Number(currentEntry.label) : NaN;
-  const findStep = (dir: -1 | 1): PageLink | undefined => {
-    if (!Number.isFinite(currentNum)) return undefined;
-    const want = currentNum + dir;
-    return pages.find((p) => !p.current && Number(p.label) === want);
-  };
-
-  const prev = findStep(-1);
-  const next = findStep(1);
-
-  /*
-   * 可见文字用 PREV / NEXT，与版面里其余英文小标题（BING — 检索 的刊名式标识、
-   * 等宽字体的页码）保持同一种语气：短、克制、不与中文正文抢注意力。
-   * 无障碍标签仍用中文 —— 读屏念「上一页」比念「PREV」更容易理解。
-   */
-  /*
-   * 优先用**原站自己的**「上一页 / 下一页」链接。
-   *
-   * 只靠按页码推算的相邻页是不够的：手机端的翻页控件常常由脚本驱动、
-   * 或换了参数形式，页码推算会得不到「相邻页」，于是两个按钮都没有目标
-   * —— 用户看到的就是「PREV / NEXT 不可用」。
-   * 原站链接是真实目标，有就直接用，比推算可靠。
-   *
-   * 重写只是把原站 DOM 搬进了 `#se-source`（未删除），节点仍在文档里，
-   * 所以这里限定在该容器内查找 —— 避免命中我们自己上一次渲染的按钮。
-   */
-  const prevHref = prev?.href ?? findOriginalStep('prev')?.href ?? null;
-  const nextHref = next?.href ?? findOriginalStep('next')?.href ?? null;
-
-  /*
-   * 两个方向都没有目标时才不渲染这一行。
-   *
-   * 典型场景是结果只有一页：既没有相邻页，原站也没有翻页控件。
-   * 照常渲染会得到两个灰色空按钮 —— 那才是「两个都不可用」的来源。
-   * 桌面端由页码列表承担分页显示，不受影响。
-   */
-  if (prevHref || nextHref) {
-    steps.append(
-      buildStep(prevHref, '上一页', 'se-page-prev', 'PREV'),
-      buildStep(nextHref, '下一页', 'se-page-next', 'NEXT'),
-    );
-    nav.appendChild(steps);
-  } else {
-    /*
-     * 窄屏下 nav 会只剩「已被 display:none 的页码列表」，
-     * 于是一条规则线加 3.5rem 外边距之下什么也没有。
-     * 加个类让窄屏把整行收掉（桌面仍显示当前页标记）。
-     */
-    nav.classList.add('se-pagination-empty');
-  }
-
-  return nav;
+/** 「加载更多」拼下一页地址所需的状态 */
+export interface PaginationState {
+  /** 每页条数（原站设置或偏移量推断） */
+  pageSize: number;
+  /** 当前 URL 所在页 */
+  pageNumber: number;
+  /** 原站给出的最大页（可能因晚渲染而偏小，由 watchSourcePagination 补齐） */
+  maxPage: number;
 }
 
-/**
- * 在隐藏数据源里找原站自己的「上一页 / 下一页」锚点。
- *
- * 三级回退：引擎的固定类名 → 语义化 rel → 无障碍标签。
- * 都取不到返回 null，表示这一页确实没有该方向的翻页。
- */
-function findOriginalStep(dir: 'prev' | 'next'): HTMLAnchorElement | null {
-  const scope = document.getElementById(SOURCE_ID) ?? document;
-  const selectors =
-    dir === 'next'
-      ? [
-          '.sb_pagN[href]',
-          'a[rel="next"][href]',
-          'a[aria-label="下一页"][href]',
-          'a[aria-label="Next"][href]',
-          'a[title="下一页"][href]',
-        ]
-      : [
-          '.sb_pagP[href]',
-          'a[rel="prev"][href]',
-          'a[aria-label="上一页"][href]',
-          'a[aria-label="Previous"][href]',
-          'a[title="上一页"][href]',
-        ];
-  for (const selector of selectors) {
-    // 排除我们自己渲染的按钮：重写中途 `#se-source` 可能还没建立，
-    // 此时会退到整个文档上查找，别把上一轮的 nav 当成原站链接。
-    const hit = Array.from(scope.querySelectorAll<HTMLAnchorElement>(selector)).find(
-      (a) => !a.closest(`#${ROOT_ID}`),
-    );
-    if (hit) return hit;
-  }
-  return null;
+export function getPaginationState(): PaginationState {
+  return { pageSize, pageNumber, maxPage: paginationMaxPage };
 }
 
-/**
- * 造一个「上一页 / 下一页」控件。
- *
- * 目标不存在时（首页的上一页、末页的下一页）渲染为 `<span>` 而非禁用的 `<a>`：
- * 禁用链接仍会进 Tab 序列、也会被读屏软件念成「链接」，
- * 而这里它压根不是可去的地方。
- */
-function buildStep(
-  href: string | null,
-  ariaLabel: string,
-  className: string,
-  text: string,
-): HTMLElement {
-  if (!href) {
-    const dim = document.createElement('span');
-    dim.className = `se-page-step se-page-step-off ${className}`;
-    dim.setAttribute('aria-disabled', 'true');
-    dim.textContent = text;
-    return dim;
-  }
+/** 按页码构造搜索页地址（隐私模式下先净化基址） */
+export function buildPageUrl(page: number): string {
+  const base = paginationBase ?? new URL(location.href);
+  return buildPageHref(base, page, pageSize, paginationQueryParam);
+}
 
-  const link = document.createElement('a');
-  link.className = `se-page-step ${className}`;
-  link.href = href;
-  link.textContent = text;
-  link.setAttribute('aria-label', ariaLabel);
-  return link;
+/*
+ * 重写完成后，原站分页往往还没渲染完。
+ *
+ * 必应（尤其 www 版）是「先出结果、后补分页」：重写时可能只等到当前页
+ * 自己的那一个 first= 链接，总页数便被算成当前页。
+ * 重写不删除原站 DOM，它只是被搬进数据源并继续被必应更新；
+ * 盯着数据源即可在页码链接补齐时把总页数补上，并通知加载更多按钮。
+ */
+function watchSourcePagination(source: HTMLElement): void {
+  stopWatchingPagination();
+  paginationObserver = new MutationObserver(schedulePaginationRefresh);
+  /*
+   * 不只监听新增节点：必应也可能先摆好空链接、稍后才补 `href`，
+   * 或把页码文字填进去 —— 这些是属性 / 文本变化，childList 看不到。
+   */
+  paginationObserver.observe(source, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['href'],
+    characterData: true,
+  });
+
+  /*
+   * 观察器只覆盖「此刻之后」的变化，而分页也可能恰好在提取之后、
+   * 观察器挂上之前那段构建时间里补齐 —— 主动查一次兜住这个窗口。
+   */
+  schedulePaginationRefresh();
+}
+
+function schedulePaginationRefresh(): void {
+  if (paginationRefreshTimer) return;
+  paginationRefreshTimer = window.setTimeout(() => {
+    paginationRefreshTimer = 0;
+    refreshPagination();
+  }, 250);
+}
+
+function stopWatchingPagination(): void {
+  paginationObserver?.disconnect();
+  paginationObserver = null;
+  if (paginationRefreshTimer) {
+    window.clearTimeout(paginationRefreshTimer);
+    paginationRefreshTimer = 0;
+  }
+}
+
+/** 原站补上新的页码线索后，扩充总页数（只增不减），并通知加载更多按钮 */
+function refreshPagination(): void {
+  const source = document.getElementById(SOURCE_ID);
+  if (!source || !document.getElementById(ROOT_ID)) return;
+
+  const max = Math.min(readPaginationHints(source).max, MAX_PAGE_COUNT);
+  if (max <= paginationMaxPage) return;
+
+  const previous = paginationMaxPage;
+  paginationMaxPage = max;
+  log.info(`[分页补齐] 原站分页稍后渲染：总页数 ${previous} → ${max}`);
+  document.dispatchEvent(new CustomEvent(PAGINATION_UPDATED_EVENT));
 }
 
 
@@ -1382,9 +1225,8 @@ function pruneAnswerNode(node: HTMLElement): boolean {
  *
  * 那个做法已经**回退**，因为它连带的破坏远大于收益：
  *
- *  1. **别的脚本的样式也一起被关掉。** 东方永页机（Pagetual）的侧边浮动工具条
- *     是它自己注入 CSS 渲染的，一并禁用后工具条完全不成样子。
- *     这个扩展是本项目要协同的对象，不能伤到它。
+ *  1. **别的脚本的样式也一起被关掉。** 同一个页面上还可能有用户安装的
+ *     其它脚本 / 扩展，它们的界面靠自己注入的 CSS 渲染，一并禁用后会散架。
  *  2. **原本靠原站 CSS 才隐藏的元素会全部显形。** 实测必应会往 body 插
  *     `div.overlay-dimmer`（position:fixed、z-index:9998、pointer-events:auto、
  *     铺满视口），它只靠必应样式表里的 `.b_hide { display:none }` 才不显示 ——

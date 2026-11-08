@@ -21,8 +21,9 @@
 import { log } from '../core/env.js';
 import { ROOT_ID, rerenderResults } from './strip-to-results.js';
 import { openFilterPanel } from './filter-panel.js';
-import { getSettings, setPrivacyEnabled } from './settings-store.js';
+import { getSettings, setPrivacyEnabled, setAutoLoadMoreEnabled } from './settings-store.js';
 import { cleanAddressBar } from './privacy.js';
+import { refreshAutoLoad } from './load-more.js';
 import type { EngineAdapter } from '../types/engine.js';
 
 /** 弹窗根元素类名 */
@@ -33,6 +34,9 @@ const OVERLAY_CLASS = 'se-settings-overlay';
 
 /** 净化开关的类名，验证脚本据此定位 */
 export const PRIVACY_TOGGLE_CLASS = 'se-privacy-toggle';
+
+/** 「自动加载更多结果」开关的类名 */
+export const AUTO_MORE_TOGGLE_CLASS = 'se-auto-more-toggle';
 
 /** 「进入」按钮的类名 */
 export const FILTER_GOTO_CLASS = 'se-settings-goto';
@@ -86,7 +90,7 @@ export function openSettingsPanel({ engine }: SettingsPanelOptions): void {
   const rows = document.createElement('div');
   rows.className = 'se-settings-rows';
 
-  rows.append(buildFilterRow(), buildPrivacyRow(engine));
+  rows.append(buildFilterRow(), buildAutoLoadRow(), buildPrivacyRow(engine));
 
   // ---- 底部留白区：后续设置项追加在这里 ----
   const tail = document.createElement('div');
@@ -155,6 +159,58 @@ function buildFilterRow(): HTMLElement {
   hint.textContent = '屏蔽指定网站的搜索结果。';
 
   head.append(label, go);
+  row.append(head, hint);
+  return row;
+}
+
+/**
+ * 「自动加载更多结果」行：一个开关。
+ *
+ * 关闭时列表底部的 SHOW MORE 需要点击才加载；
+ * 开启后按钮进入视口即自动加载，直到没有更多结果或达到上限。
+ */
+function buildAutoLoadRow(): HTMLElement {
+  const row = document.createElement('div');
+  row.className = 'se-settings-row se-settings-row-stacked';
+
+  const head = document.createElement('div');
+  head.className = 'se-settings-row-head';
+
+  const label = document.createElement('span');
+  label.className = 'se-settings-label';
+  label.textContent = '自动加载更多结果';
+
+  const enabled = getSettings().autoLoadMore;
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = `se-settings-switch ${AUTO_MORE_TOGGLE_CLASS}`;
+  toggle.setAttribute('role', 'switch');
+  toggle.setAttribute('aria-checked', String(enabled));
+  toggle.setAttribute('aria-label', '自动加载更多结果');
+  toggle.classList.toggle('se-settings-switch-on', enabled);
+
+  const knob = document.createElement('span');
+  knob.className = 'se-settings-knob';
+  knob.setAttribute('aria-hidden', 'true');
+  toggle.appendChild(knob);
+
+  head.append(label, toggle);
+
+  const hint = document.createElement('p');
+  hint.className = 'se-settings-hint';
+  hint.textContent = '滚动到列表底部时自动加载；每次检索最多加载 100 条结果。';
+
+  toggle.addEventListener('click', () => {
+    const next = !(toggle.getAttribute('aria-checked') === 'true');
+    setAutoLoadMoreEnabled(next);
+    toggle.setAttribute('aria-checked', String(next));
+    toggle.classList.toggle('se-settings-switch-on', next);
+
+    // 已打开的页面里立刻生效：按钮若正好在视口内，马上开始加载
+    if (next) refreshAutoLoad();
+  });
+
   row.append(head, hint);
   return row;
 }

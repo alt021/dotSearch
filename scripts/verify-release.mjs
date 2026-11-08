@@ -46,7 +46,7 @@ check('未残留本地服务地址', !src.includes('127.0.0.1:8777'));
 const grants = [...head.matchAll(/@grant\s+(\S+)/g)].map((m) => m[1]);
 check(
   '权限集合与设计一致',
-  grants.sort().join(',') === 'GM_addStyle,GM_getValue,GM_setValue',
+  grants.sort().join(',') === 'GM_addStyle,GM_getValue,GM_setValue,unsafeWindow',
   grants.join(','),
 );
 
@@ -70,15 +70,17 @@ check('注入全部必应入口', /bing\.com\/search\*/.test(head));
 const features = [
   ['结果页重写', 'se-masthead'],
   ['结果条目结构', 'se-num'],
-  ['分页重建', 'se-pagination'],
-  ['分页化隐藏占位', 'se-item-hidden'],
+  ['加载更多按钮', 'se-more-button'],
+  ['加载更多上限', 'MAX_TOTAL_RESULTS'],
+  ['隐藏结果占位', 'se-item-hidden'],
   ['过滤：标签', 'se-tag'],
   ['过滤：浮层', 'se-filter-panel'],
   ['附加设置弹窗', 'se-settings-panel'],
+  ['自动加载更多设置', 'se-auto-more-toggle'],
   ['净化链接开关', 'se-privacy-toggle'],
   ['净化：URL 白名单', 'sanitizeSearchUrl'],
   ['净化：地址栏改写', 'cleanAddressBar'],
-  ['永页机协同', 'pagetual'],
+  ['永页机停用', 'initedPagetual'],
   ['深色模式', 'prefers-color-scheme'],
   ['账户会话采集', 'captureSession'],
   ['菜单入口', 'se-menu-popup'],
@@ -89,17 +91,22 @@ const features = [
 ];
 
 /*
- * ---- 响应式：窄屏收紧两侧留白 + 内容顶格 + 分页只留前后页 ----
- * 这些规则被误删时，手机端会退回「两侧 32px 留白 + 内容右移 4.5rem +
- * 页码挤成几行」的旧形态，而单看桌面截图完全发现不了。
+ * ---- 拼页：按钮与自动加载，旧的页码栏必须彻底消失 ----
+ * 页码栏是已废弃的能力，残留任何一条都会和「加载更多」抢翻页；
+ * 按钮或自动加载开关丢失时，用户会以为只有 10 条结果。
  */
-check('窄屏 media query 存在', /@media\s*\(max-width:\s*600px\)/.test(src));
-check('窄屏收紧水平留白', /padding-left:\s*0\.875rem/.test(src));
-check('窄屏内容顶格（改单列）', /grid-template-columns:\s*1fr/.test(src));
-check('上下页按钮存在', src.includes('se-page-step'));
-check('页码列表容器存在', src.includes('se-pagination-pages'));
-check('上下页容器存在', src.includes('se-pagination-steps'));
-check('桌面默认隐藏上下页', /\.se-pagination-steps\s*\{[^}]*display:\s*none/.test(src));
+check('SHOW MORE 文案存在', src.includes('SHOW MORE'));
+check('无旧页码栏', !src.includes('se-pagination'));
+check('无旧页码标记', !/se-page-current|syncPagerPage/.test(src));
+check('加载更多不产生分割线', !/\.se-more\s*\{[^}]*border-top/.test(src));
+/*
+ * ---- 移动端支持已移除（反向断言）----
+ * 残留的窄屏规则或 PREV/NEXT 控件会让桌面版在窄窗口下换一套版式，
+ * 属于已明确废弃的能力。
+ */
+check('无窄屏 media query', !/@media\s*\(max-width:\s*\d+px\)/.test(src));
+check('无上下页控件', !src.includes('se-page-step'));
+check('无上下页容器', !src.includes('se-pagination-steps'));
 for (const [label, needle] of features) {
   check(label, src.includes(needle));
 }
@@ -108,6 +115,8 @@ for (const [label, needle] of features) {
 check('净化说明文案', src.includes('去除链接中的跟踪条目，其余不再变动'));
 check('过滤功能说明', src.includes('屏蔽指定网站的搜索结果'));
 check('开关标签为净化链接', src.includes('净化链接'));
+check('自动加载开关标签', src.includes('自动加载更多结果'));
+check('自动加载说明文案', src.includes('每次检索最多加载 100 条结果'));
 
 /* ---- 未启用的引擎不应混入 ---- */
 check('未混入 Google 适配器', !src.includes('www.google.com/search'));

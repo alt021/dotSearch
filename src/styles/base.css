@@ -91,13 +91,14 @@ body.se-stripped {
  * 并正常显示在重写后的页面底部。
  *
  * 之所以是「逐个 id 列出」而不是「隐藏 body 下所有外来元素」：
- * 后者会连**东方永页机**的侧边浮动工具条一起隐藏掉 ——
- * 它也是第三方脚本插到 body 上的 UI，必须留着。
+ * 后者会连**其它脚本**插到 body 上的 UI 一起隐藏掉 ——
+ * 那些节点不归我们管，不能用一条通用规则扫掉。
  *
  * ⚠️ 清单里**绝不能**出现 `#b_results` / `#b_content` / `.b_pag` ——
- * 东方永页机要靠它们定位「主内容容器」与「下一页链接」，
- * 藏掉就等于废掉自动翻页。`#b_context` 可以藏：直答区是把它内部的
- * `.b_ans` 节点搬进我们自己的列表，不依赖这个容器可见。
+ * 它们是隐藏的数据源：结果从这里提取，分页线索也靠它判断
+ * 「还有没有下一页」（见 strip-to-results 的 watchSourcePagination）。
+ * `#b_context` 可以藏：直答区是把它内部的 `.b_ans` 节点搬进
+ * 我们自己的列表，不依赖这个容器可见。
  *
  * 这份清单按实测的必应结构整理，改版后若有新的外壳需要补进来，加在这里。
  */
@@ -140,9 +141,9 @@ body.se-stripped > header {
 /*
  * 重写时必应原有 DOM 被整体搬进这里，而不是删除。
  *
- * **为什么不用 display: none**：东方永页机这类自动翻页脚本要靠分析
- * 页面结构来定位「下一页链接」与「主内容容器」，display:none 的子树
- * 可能被它的可见性判断跳过，协同就断了。
+ * **为什么不用 display: none**：这是必应自己的 DOM，它的脚本还会往里
+ * 渲染晚到的分页线索（watchSourcePagination 依赖这一点）。保持正常的
+ * 布局与可见性语义，避免原站脚本因为「不可见」而改变行为。
  * 因此改为「仍然渲染、但完全看不见」：
  *
  *   position: absolute + 1px + overflow: hidden
@@ -361,6 +362,21 @@ body.se-stripped > header {
 }
 
 /*
+ * 必须单独压掉外部的 text-decoration。
+ *
+ * 必应的样式表里有一条 `a:hover` 下划线规则（线上实测，快照里加载不到它的外链 CSS）。
+ * 上面的 `.se-link { text-decoration: none }` 没有 id，特异性不够 ——
+ * 鼠标直接压在标题上时仍会被加上一条文字下划线，与我们的 2px 渐变线叠加，
+ * 表现为「悬停标题时下划线更粗」，而悬停条目的其它位置时不会。
+ * 用 #se-root 提高特异性并加 !important，钉死为无装饰。
+ */
+#se-root .se-link,
+#se-root .se-link:hover,
+#se-root .se-link:focus {
+  text-decoration: none !important;
+}
+
+/*
  * 悬停反馈作用于整条卡片：标题标红并展开下划线。
  * 整块可点的条目上，用户视线落在卡片任意位置都应得到同一反馈，
  * 而不只是鼠标正好压在那几个字的标题上。
@@ -438,93 +454,50 @@ body.se-stripped > header {
   color: var(--se-snippet);
 }
 
-/* ---- 分页 ---- */
+/* ---- 加载更多 ---- */
 
-.se-pagination {
+/*
+ * 结果列表之后不再有分割线：页码栏移除后，这里只剩一个按钮，
+ * 用留白与列表分开即可。粗规则线保留给页头与更重要的分区。
+ */
+.se-more {
   display: flex;
-  flex-wrap: wrap;
-  /* 页码与当前页的盒模型尺寸一致，按基线对齐才不会上下错位 */
-  align-items: baseline;
-  gap: 0 1.25rem;
-  margin-top: 3.5rem;
-  padding-top: 1.5rem;
-  border-top: 3px solid var(--se-rule);
+  justify-content: center;
+  margin-top: 2.5rem;
 }
 
-/*
- * 页码与「当前页」共用同一套盒模型（1px 边框 + 相同内边距），
- * 两者只差边框与衬底的颜色 —— 否则切换页码时尺寸会跳一下。
- */
-.se-page {
-  padding: 0.15rem 0.5rem;
-  font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
-  font-size: 0.875rem;
-  color: var(--se-muted);
-  text-decoration: none;
-  border: 1px solid transparent;
-}
-
-.se-page:hover {
-  color: var(--se-accent);
-  border-bottom-color: var(--se-accent);
-}
-
-/*
- * 当前页：用黑色描边 + 浅衬底表示，而不是强调色 + 下划线。
- *
- * 这样两种语义各有各的表达方式：
- *   可跳转的页码 → 红色（悬停）
- *   当前所在页   → 形状（边框与衬底）
- * 若都用红色，反而分不清哪个能点。
- * 颜色取 --se-fg，深色主题下会自动反转，无需另写一套。
- */
-.se-page-current {
-  color: var(--se-fg);
-  background: color-mix(in srgb, var(--se-fg) 7%, transparent);
-  border-color: var(--se-fg);
-}
-
-/*
- * 分页的两套控件：页码列表（桌面）与上/下一页（窄屏）。
- *
- * 两套都渲染、由视口决定显示哪套 —— 而不是按视口重建 DOM，
- * 这样旋转屏幕时不会打断阅读位置，也不会丢失链接状态。
- * 各自的显示规则写在下面的 @media 里，这里只定义默认形态。
- */
-.se-pagination-pages {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 0 1.25rem;
-}
-
-/* 桌面端不显示上/下一页；窄屏才启用（见文件末尾的窄屏规则） */
-.se-pagination-steps {
+.se-more[hidden] {
   display: none;
 }
 
-/* 上/下一页的按钮形态：直角、描边，与页码同一套视觉语言 */
-.se-page-step {
-  padding: 0.4rem 0.9rem;
+.se-more-button {
+  appearance: none;
+  margin: 0;
+  padding: 0.9rem 3rem;
   font-family: 'SF Mono', 'JetBrains Mono', Consolas, 'Liberation Mono', monospace;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
   color: var(--se-fg);
-  text-decoration: none;
+  background: transparent;
   border: 1px solid var(--se-fg);
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
-.se-page-step:hover {
-  color: var(--se-accent);
-  border-color: var(--se-accent);
+.se-more-button:hover:not(:disabled) {
+  color: var(--se-bg);
+  background: var(--se-fg);
 }
 
-/*
- * 到头了（首页的「上一页」、末页的「下一页」）：
- * 保留位置但不给强调，避免用户反复点一个不会动的控件。
- */
-.se-page-step-off {
-  color: var(--se-muted);
-  border-color: var(--se-line);
+.se-more-button:focus-visible {
+  outline: 2px solid var(--se-accent);
+  outline-offset: 2px;
+}
+
+.se-more-button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 /* ---- 其他 ---- */
@@ -541,94 +514,6 @@ body.se-stripped > header {
   margin-bottom: 2.5rem;
   padding-bottom: 2rem;
   border-bottom: 1px solid var(--se-line);
-}
-
-/*
- * ---- 窄屏：收紧两侧留白 + 内容顶格 + 分页只留前后页 ----
- *
- * 设计取向：这是一页杂志式排版，字号层级、列宽比例、间距节奏
- * 都是版面语言的一部分，不该在手机上换成另一套结构。
- *
- * 但有两件事必须为窄屏让路，它们都不是「换版面」，而是
- * 「把同一版面在更窄的纸面上重新对齐」：
- *
- *   1. **内容顶格**。桌面版左侧有一条 3.5rem 序号栏 + 1rem 间距，
- *      内容整体右移 4.5rem。在手机上这一栏挤占的是正文宽度，
- *      因此窄屏把两列并成一列、序号缩在正文上方 ——
- *      标题与描述直接顶住左边缘，左侧不再留空。
- *
- *   2. **分页只留上/下一页**。页码列表在窄屏一行放不下，
- *      换行后每个目标又小到难以点中；顺序阅读真正会用的
- *      只有「上一页 / 下一页」两个动作。
- *
- * 垂直内边距（3.5rem 顶部 / 6rem 底部）保持不变：
- * 那是页头呼吸感与分页尾距的一部分，与「两侧空余」无关。
- */
-@media (max-width: 600px) {
-  #se-root {
-    padding-left: 0.875rem;
-    padding-right: 0.875rem;
-    /* 明确按内容盒计算：padding 不该把根容器顶出视口 */
-    box-sizing: border-box;
-  }
-
-  /*
-   * 序号与内容保持**同一行**（与桌面版式一致），只把序号列收窄。
-   *
-   * 手机上没有横向余量分给桌面那个 3.5rem 的空列；
-   * 1.6rem 够放下两位数，正文因此能多拿回约 30px。
-   *
-   * 基线对齐让序号与右栏首行（来源地址，见 buildResultItem 的
-   * cite → title → snippet 顺序）落在同一条线上，而不是悬在行顶。
-   */
-  .se-item {
-    grid-template-columns: 1.6rem 1fr;
-    gap: 0 0.4rem;
-    align-items: baseline;
-  }
-
-  /* 分页：隐藏页码列表，显示上/下一页 */
-  .se-pagination-pages {
-    display: none;
-  }
-
-  /*
-   * 页码列表被隐藏、上下页又没有目标时，整行不占位 ——
-   * 否则页面底部会留下一条规则线加一块空白，什么也没有。
-   */
-  .se-pagination-empty {
-    display: none;
-  }
-
-  .se-pagination-steps {
-    display: flex;
-    align-items: stretch;
-    gap: 0.75rem;
-    width: 100%;
-    /* 行宽由内容盒决定，避免任何外部宽度把整行推出去 */
-    box-sizing: border-box;
-    max-width: 100%;
-  }
-
-  /*
-   * 两个按钮平分整行。
-   *
-   * 为什么不用 auto 宽度：手机上「上一页」「下一页」若各自只包住文字，
-   * 可点区域会小很多，还容易点空。平分后每个约半屏宽，
-   * 恰好是拇指容易够到的两个位置。
-   * 指定 min-height 保证触控目标不小于常见的 36px 经验值。
-   */
-  .se-page-step {
-    flex: 1 1 0;
-    /* flex 子项默认 min-width:auto，内容一长就顶出去；显式允许收缩 */
-    min-width: 0;
-    box-sizing: border-box;
-    min-height: 2.75rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-  }
 }
 
 /* ==========================================================================
@@ -1008,9 +893,8 @@ body.se-stripped > header {
  *
  * 必应对 `input` 也有自己的样式规则，而且比我们的类选择器更具体
  * （实测把面板输入框染成 #444 文字配 #ddd 边框）。
- * 曾经的做法是「把必应样式表整体禁用」，但那会连带关掉**别的脚本**的样式
- * （东方永页机的侧边工具条因此完全走样），并让只靠原站 CSS 隐藏的浮层
- * 全部显形。所以改为在这里用 !important 兜底：
+ * 曾经的做法是「把必应样式表整体禁用」，但那会连带关掉**别的脚本**的样式，
+ * 并让只靠原站 CSS 隐藏的浮层全部显形。所以改为在这里用 !important 兜底：
  * 只写自己的类名，绝不会波及页面上的其它任何元素。
  *
  * ⚠️ 用 !important 就意味着**各状态也必须一并 !important**，
@@ -1093,23 +977,6 @@ body.se-stripped > header {
   background-color: var(--se-fg) !important;
 }
 
-/* 窄屏：三种控件改为纵向堆叠，避免每格窄到不可用 */
-@media (max-width: 640px) {
-  .se-filter-row,
-  .se-filter-add {
-    grid-template-columns: 1fr;
-  }
-
-  .se-filter-row {
-    gap: 0.4rem;
-    padding: 0.9rem 0;
-  }
-
-  .se-filter-remove {
-    justify-self: start;
-  }
-}
-
 /* ==========================================================================
    附加设置弹窗
    --------------------------------------------------------------------------
@@ -1122,7 +989,7 @@ body.se-stripped > header {
 
    拒绝：无圆角、无阴影、无渐变、无漂浮抬升。
    开关也不用 iOS 那种胶囊，而是**方块滑块**：
-   圆角胶囊是移动端语汇，与这里的排印体系不搭。
+   圆角胶囊与这里的排印体系不搭。
    ========================================================================== */
 
 /* 遮罩复用 .se-filter-overlay 的规则（见 settings-panel.ts 同时挂两个类），
@@ -1356,17 +1223,6 @@ body.se-stripped > header {
  */
 .se-settings-tail {
   min-height: 1.5rem;
-}
-
-/* 窄屏：名称与控件仍可同行（控件都很窄），只收一点内边距 */
-@media (max-width: 480px) {
-  .se-settings-panel {
-    padding: 1.25rem;
-  }
-
-  .se-settings-row {
-    gap: 0.75rem;
-  }
 }
 
 /* ==========================================================================

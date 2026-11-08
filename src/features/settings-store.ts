@@ -39,11 +39,20 @@ export interface Settings {
    * 却以为脚本坏了。
    */
   privacy: boolean;
+
+  /**
+   * 自动加载更多结果。
+   *
+   * 开启后，列表底部的「加载更多」进入视口时自动触发，
+   * 不再需要逐次点击。单次检索的总量上限由加载更多模块统一控制。
+   */
+  autoLoadMore: boolean;
 }
 
 /** 出厂默认值：全部关闭，避免升级后突然改变用户看到的页面 */
 const DEFAULTS: Settings = {
   privacy: false,
+  autoLoadMore: false,
 };
 
 /** 共享存储（脚本级、跨源）是否可用 */
@@ -103,6 +112,8 @@ function parse(raw: string | null): Partial<Settings> {
 function normalize(raw: Partial<Settings>): Settings {
   return {
     privacy: typeof raw.privacy === 'boolean' ? raw.privacy : DEFAULTS.privacy,
+    autoLoadMore:
+      typeof raw.autoLoadMore === 'boolean' ? raw.autoLoadMore : DEFAULTS.autoLoadMore,
   };
 }
 
@@ -141,4 +152,14 @@ export function isPrivacyEnabled(): boolean {
 export function setPrivacyEnabled(enabled: boolean): boolean {
   setSetting('privacy', enabled);
   return enabled;
+}
+
+/** 是否开启「自动加载更多结果」 */
+export function isAutoLoadMoreEnabled(): boolean {
+  return getSettings().autoLoadMore;
+}
+
+/** 开关「自动加载更多结果」 */
+export function setAutoLoadMoreEnabled(enabled: boolean): void {
+  setSetting('autoLoadMore', enabled);
 }

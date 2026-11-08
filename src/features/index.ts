@@ -1,7 +1,8 @@
 import type { Feature } from '../types/feature.js';
 import { stripToResults } from './strip-to-results.js';
 import { toolMenu } from './tool-menu.js';
-import { pagetualBridge } from './pagetual-bridge.js';
+import { pagetualGuard } from './pagetual-guard.js';
+import { loadMore } from './load-more.js';
 import { settingsCleanup } from './settings-cleanup.js';
 
 /**
@@ -10,7 +11,7 @@ import { settingsCleanup } from './settings-cleanup.js';
  * 项目定位是「重写搜索结果页」。
  * **顺序即执行顺序，且 Runner 会依次 await** ——
  * 这很关键：后几个功能都依赖 stripToResults 先把页面与隐藏数据源准备好。
- * 顺序即：重写页面 → 挂页头菜单 → 接上永页机协同 → 清理设置页。
+ * 顺序即：重写页面 → 挂页头菜单 → 赶走永页机 → 挂「加载更多」→ 清理设置页。
  *
  * settingsCleanup 排在最后不是随意的：它作用于**另一个页面**
  * （/account/general），与结果页重写互不相干。
@@ -20,8 +21,9 @@ import { settingsCleanup } from './settings-cleanup.js';
 export const ALL_FEATURES: Feature[] = [
   stripToResults,
   toolMenu,
-  pagetualBridge,
+  pagetualGuard,
+  loadMore,
   settingsCleanup,
 ];
 
-export { stripToResults, toolMenu, pagetualBridge, settingsCleanup };
+export { stripToResults, toolMenu, pagetualGuard, loadMore, settingsCleanup };

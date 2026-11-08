@@ -28,8 +28,13 @@ export const ENGINE_IDS = ['bing', 'google', 'baidu'] as const;
  * `GM_cookie` 曾用于搜索隐私增强的 Cookie 清理，该能力已整体移除
  * （真机效果不佳），相应权限一并撤销 —— 少一个敏感权限，
  * 安装时的授权提示也更少。
+ *
+ * `unsafeWindow` 仅用于一处：在页面上下文里置位 `initedPagetual`，
+ * 让东方永页机检测到后自行退出（它的单例标记挂在页面 window 上）。
+ * 沙箱内的 `window` 与页面 window 不是同一个对象，不申请这个权限
+ * 就只能清理它的界面、无法阻止它初始化。
  */
-export const GRANTS = ['GM_addStyle', 'GM_getValue', 'GM_setValue'] as const;
+export const GRANTS = ['GM_addStyle', 'GM_getValue', 'GM_setValue', 'unsafeWindow'] as const;
 
 /**
  * 各引擎的构建信息。

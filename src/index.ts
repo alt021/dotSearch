@@ -13,6 +13,7 @@ import { Runner } from './core/runner.js';
 import type { EngineAdapter } from './types/engine.js';
 import { activeEngines } from './engines/index.js';
 import { settingsCleanup } from './features/settings-cleanup.js';
+import { setPagetualOptOut } from './features/pagetual-guard.js';
 
 /**
  * 目标引擎，构建时由 esbuild 的 define 注入。
@@ -56,6 +57,16 @@ const targetEngine: EngineAdapter | undefined = activeEngines.find((e) => e.id =
 if (!targetEngine) {
   log.warn(`本产物面向的引擎「${targetId}」未注册，脚本不启动。`);
 } else {
+  /*
+   * 抢在东方永页机初始化之前置位它的单例标记。
+   *
+   * 永页机顶层执行后会排一个约 300ms 的初始化任务；本脚本是
+   * document-start，在 Runner 启动（要等 DOM）之前完成这一步，
+   * 它检查到标记就会直接退出。只在必应上做 —— 只有必应接入了
+   * 本脚本自己的拼页，其它引擎把永页机赶走就没人翻页了。
+   */
+  if (targetEngine.id === 'bing') setPagetualOptOut();
+
   const runner = new Runner();
 
   /**

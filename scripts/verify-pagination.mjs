@@ -1,8 +1,10 @@
 /**
- * 上下页按钮的边界验证：首页 / 中间页 / 末页。
+ * 拼页状态验证：页码栏已移除，序号随 URL 里的 first= 连续。
  *
- * 样例快照只有第 1 页，因此这里直接对分页构建结果做断言：
- * 用真实的 bing-live.html 快照跑三种页码状态，看按钮是 <a> 还是退化态 <span>。
+ * 样例快照只有第 1 页的内容，这里用不同 first= 的地址驱动脚本，断言：
+ *   - 旧页码栏彻底不存在；
+ *   - SHOW MORE 按钮就位；
+ *   - 序号从正确的全局偏移开始（第 2 页首条是 11，不是 01）。
  *
  * 用法：node scripts/verify-pagination.mjs
  */
@@ -38,12 +40,9 @@ const base = `http://127.0.0.1:${server.address().port}/bing.html`;
 
 const browser = await launchChromite();
 
-/**
- * 在指定 URL 上跑一遍脚本，读分页里上下页的状态。
- * currentFirst 用作「第几页」——样例页的分页偏移由 first 参数决定。
- */
+/** 在指定 URL 上跑一遍脚本，读列表与按钮的状态 */
 async function probe(url, label) {
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await page.addInitScript(() => {
     globalThis.__SE_FORCE_ENGINE__ = 'bing';
   });
@@ -52,26 +51,22 @@ async function probe(url, label) {
   await page.waitForTimeout(1500);
 
   const info = await page.evaluate(() => {
-    const nav = document.querySelector('.se-pagination');
-    if (!nav) return { ok: false, reason: '没有分页' };
-    const read = (sel) => {
-      const el = nav.querySelector(sel);
-      if (!el) return null;
-      return {
-        tag: el.tagName,
-        text: el.textContent,
-        href: el.getAttribute('href'),
-        disabled: el.getAttribute('aria-disabled') === 'true',
-      };
-    };
+    const list = document.getElementById('se-list');
+    const more = document.querySelector('.se-more-button');
+    const container = document.querySelector('.se-more');
     return {
-      ok: true,
-      pages: [...nav.querySelectorAll('.se-pagination-pages .se-page')].map((e) => ({
-        text: e.textContent,
-        current: e.getAttribute('aria-current') === 'page',
-      })),
-      prev: read('.se-page-prev'),
-      next: read('.se-page-next'),
+      ok: Boolean(list),
+      results: list ? list.querySelectorAll('.se-item').length : 0,
+      numbers: list
+        ? [...list.querySelectorAll('.se-item .se-num')].map((e) => (e.textContent ?? '').trim())
+        : [],
+      pagerCount: document.querySelectorAll(
+        '.se-pagination, .se-pagination-pages, .se-page, .se-page-current',
+      ).length,
+      moreText: (more?.textContent ?? '').trim(),
+      moreLabel: more?.getAttribute('aria-label') ?? null,
+      moreHidden: container ? container.hasAttribute('hidden') : null,
+      stat: (document.querySelector('.se-stat')?.textContent ?? '').trim(),
     };
   });
 
@@ -79,50 +74,45 @@ async function probe(url, label) {
   return { label, ...info };
 }
 
-console.log('=== 分页上下页边界 ===');
+const pad = (n) => String(n).padStart(2, '0');
+
+/** 断言某一页的状态；expectedStart 是首条结果的全局序号 */
+function checkState(info, expectedStart) {
+  check(`${info.label}：能取到结果列表`, info.ok);
+  if (!info.ok) return;
+
+  check(`${info.label}：旧页码栏已移除`, info.pagerCount === 0, `残留 ${info.pagerCount} 个`);
+  check(`${info.label}：SHOW MORE 按钮存在`, info.moreText === 'SHOW MORE', info.moreText || '无');
+  check(`${info.label}：按钮带可读标签`, info.moreLabel === '加载更多结果', info.moreLabel ?? '无');
+  check(`${info.label}：按钮初始可见`, info.moreHidden === false, String(info.moreHidden));
+  check(
+    `${info.label}：页头只报已加载条数`,
+    info.stat === `找到 ${info.results} 条结果`,
+    info.stat || '无',
+  );
+
+  // 快照本身是第 1 页内容，页码偏移由 URL 决定，序号应整体平移
+  const expected = info.numbers.map((_, i) => pad(expectedStart + i));
+  check(
+    `${info.label}：序号从 ${pad(expectedStart)} 起连续`,
+    info.numbers.join(',') === expected.join(','),
+    info.numbers.slice(0, 3).join(',') + (info.numbers.length > 3 ? '…' : ''),
+  );
+}
+
+console.log('=== 拼页状态 ===');
 
 const first = await probe(`${base}?q=test`, '第 1 页');
-console.log(`  [${first.label}] 页码=${JSON.stringify(first.pages.map((p) => p.text + (p.current ? '*' : '')))}`);
-console.log(`     上一页=${first.prev?.tag}${first.prev?.disabled ? '(禁用态)' : ''}  下一页=${first.next?.tag}`);
-
-check('第 1 页：能取到分页', first.ok, first.reason ?? '');
-check(
-  '第 1 页：上一页退化为不可点（span）',
-  first.prev?.tag === 'SPAN' && first.prev?.disabled === true,
-  `${first.prev?.tag} aria-disabled=${first.prev?.disabled}`,
-);
-check(
-  '第 1 页：下一页是可点链接',
-  first.next?.tag === 'A' && typeof first.next?.href === 'string',
-  `${first.next?.tag} href=${first.next?.href}`,
-);
+console.log(`  [${first.label}] 序号=${JSON.stringify(first.numbers.slice(0, 3))}…`);
+checkState(first, 1);
 
 const second = await probe(`${base}?q=test&first=11`, '第 2 页');
-console.log(`  [${second.label}] 页码=${JSON.stringify(second.pages.map((p) => p.text + (p.current ? '*' : '')))}`);
-console.log(`     上一页=${second.prev?.tag} href=${second.prev?.href}  下一页=${second.next?.tag}`);
+console.log(`  [${second.label}] 序号=${JSON.stringify(second.numbers.slice(0, 3))}…`);
+checkState(second, 11);
 
-check('第 2 页：能取到分页', second.ok, second.reason ?? '');
-check(
-  '第 2 页：上一页是可点链接',
-  second.prev?.tag === 'A' && typeof second.prev?.href === 'string',
-  `${second.prev?.tag} href=${second.prev?.href}`,
-);
-check(
-  '第 2 页：下一页是可点链接',
-  second.next?.tag === 'A' && typeof second.next?.href === 'string',
-);
-
-const last = await probe(`${base}?q=test&first=21`, '末页');
-console.log(`  [${last.label}] 页码=${JSON.stringify(last.pages.map((p) => p.text + (p.current ? '*' : '')))}`);
-console.log(`     上一页=${last.prev?.tag}  下一页=${last.next?.tag}${last.next?.disabled ? '(禁用态)' : ''}`);
-
-check('末页：能取到分页', last.ok, last.reason ?? '');
-check(
-  '末页：下一页退化为不可点（span）',
-  last.next?.tag === 'SPAN' && last.next?.disabled === true,
-  `${last.next?.tag}`,
-);
-check('末页：上一页是可点链接', last.prev?.tag === 'A');
+const third = await probe(`${base}?q=test&first=21`, '第 3 页');
+console.log(`  [${third.label}] 序号=${JSON.stringify(third.numbers.slice(0, 3))}…`);
+checkState(third, 21);
 
 await browser.close();
 server.close();
