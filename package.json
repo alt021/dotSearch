@@ -1,6 +1,6 @@
 {
   "name": "dotsearch",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "增强搜索引擎用户体验的 UserScript（支持 Bing / Google）",
   "type": "module",
   "private": true,
