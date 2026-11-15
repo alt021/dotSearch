@@ -69,6 +69,13 @@ const cases = [
     input: 'https://www.bing.com/search?first=21&cvid=Y',
     expect: 'https://www.bing.com/search?first=21',
   },
+  {
+    name: 'Google：保留 start / num / 语言地区 / 网页模式',
+    input:
+      'https://www.google.com/search?q=%E4%B8%AD%E6%96%87&start=10&num=20&hl=zh-CN&gl=us&udm=14&ved=abc&sa=U',
+    expect:
+      'https://www.google.com/search?q=%E4%B8%AD%E6%96%87&start=10&num=20&hl=zh-CN&gl=us&udm=14',
+  },
 ];
 
 for (const c of cases) {

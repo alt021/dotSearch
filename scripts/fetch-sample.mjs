@@ -1,7 +1,7 @@
 /**
  * 抓取真实 Bing 结果页（含分页），供离线验证使用。
  *
- * 用本机 Chromite 打开真实搜索页，提取页面 HTML 与分页控件结构。
+ * 用本机 Obscura 打开真实搜索页，提取页面 HTML 与分页控件结构。
  * 首次访问会带 Cookie 目录，避免被 Bing 重定向打断抓取。
  *
  *   node scripts/fetch-sample.mjs [查询词] [起始序号]
@@ -9,7 +9,7 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromitePersistent, PROFILE_DIR } from './lib/browser.mjs';
+import { launchObscuraPersistent, PROFILE_DIR } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const keyword = process.argv[2] ?? '网络开发';
@@ -17,7 +17,7 @@ const first = process.argv[3] ?? '11';
 
 mkdirSync(join(root, '.build'), { recursive: true });
 
-const context = await launchChromitePersistent(PROFILE_DIR, { locale: 'zh-CN' });
+const context = await launchObscuraPersistent(PROFILE_DIR, { locale: 'zh-CN' });
 const page = context.pages()[0] ?? (await context.newPage());
 
 const url = `https://www.bing.com/search?q=${encodeURIComponent(keyword)}&setlang=zh-CN&first=${first}`;

@@ -14,7 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromitePersistent } from './lib/browser.mjs';
+import { PROFILE_DIR, launchObscuraPersistent } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const bundle = readFileSync(join(root, 'dist/dev/dotSearch-bing.user.js'), 'utf8');
@@ -37,7 +37,7 @@ window.__gmStore = Object.create(null);`;
 let failures = 0;
 
 async function runCase({ label, expect }) {
-  const context = await launchChromitePersistent(join(root, '.build', 'chromite-profile'), {
+  const context = await launchObscuraPersistent(PROFILE_DIR, {
     locale: 'zh-CN',
     viewport: { width: 1280, height: 1000 },
   });

@@ -1,5 +1,5 @@
 /**
- * 实时回归验证：在 Chromite 中打开**真实** Bing 搜索页，跑多个查询词。
+ * 实时回归验证：在 Obscura 中打开**真实** Bing 搜索页，跑多个查询词。
  *
  * 与 verify-strip.mjs 的分工：
  *   verify-strip  离线快照 + 深度断言（用抓取下来的 HTML，不依赖网络）
@@ -11,7 +11,7 @@
  *
  *   node scripts/verify-live.mjs                    直连，post-load 注入
  *   node scripts/verify-live.mjs --document-start    直连，document-start 注入
- *   node scripts/verify-live.mjs --proxy             走 7897 代理（→ www.bing.com）
+ *   node scripts/verify-live.mjs --proxy             走本机代理（→ www.bing.com）
  *   node scripts/verify-live.mjs --proxy --document-start   国际版 + document-start
  *   node scripts/verify-live.mjs --host=www4.bing.com --proxy --document-start
  *
@@ -29,7 +29,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { PROFILE_DIR, launchChromitePersistent } from './lib/browser.mjs';
+import { DEFAULT_PROXY, PROFILE_DIR, launchObscuraPersistent } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 // 多产物拆分后的命名（dotSearch-bing.user.js）；本脚本只验证必应产物
@@ -54,7 +54,7 @@ const CASES = [
 /*
  * 两个可选的运行模式（默认都不开，行为与以前一致）：
  *
- *   --proxy           走本机 7897 代理。用途：必应按 IP 分流 ——
+ *   --proxy           走本机代理（SE_PROXY，默认 127.0.0.1:7890）。用途：必应按 IP 分流 ——
  *                     直连落到 cn.bing.com（中国版），
  *                     经代理落到 www.bing.com（国际版）。
  *                     两版的 DOM 与脚本时序不同，需要分别验证。
@@ -78,10 +78,10 @@ const documentStart = process.argv.includes('--document-start');
 const profileDir =
   HOST === 'www.bing.com' ? PROFILE_DIR : join(PROFILE_DIR, HOST.replace(/\./g, '-'));
 
-const context = await launchChromitePersistent(profileDir, {
+const context = await launchObscuraPersistent(profileDir, {
   locale: 'zh-CN',
   viewport: { width: 1280, height: 1000 },
-  ...(useProxy ? { proxy: { server: 'http://127.0.0.1:7897' } } : {}),
+  ...(useProxy ? { proxy: { server: DEFAULT_PROXY } } : {}),
 });
 // 持久化上下文启动时已经带一个空白页，直接复用
 const page = context.pages()[0] ?? (await context.newPage());

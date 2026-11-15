@@ -44,6 +44,13 @@ export interface EngineAdapter {
   readonly id: EngineId;
   /** 展示名。同时用于产物命名与脚本头（如「Bing」→ dotSearch for Bing） */
   readonly name: string;
+  /**
+   * 页面强调色（浅色 / 深色）。
+   *
+   * 基础样式不再内置颜色，由 Runner 按这里的值注入，
+   * 同一引擎产物只带自己的品牌色。
+   */
+  readonly theme: { readonly accent: string; readonly accentDark: string };
   /** 该引擎搜索结果页的主机名（用于日志与调试） */
   readonly hostnames: readonly string[];
 
@@ -61,6 +68,20 @@ export interface EngineAdapter {
 
   /** 单条结果节点选择器 */
   readonly resultItemSelector: string;
+
+  /**
+   * 分页参数配置。缺省表示该引擎尚未接入脚本内拼页。
+   *
+   * 各引擎的偏移参数不同：Bing 用 `first=`（1 起），Google 用 `start=`（0 起）。
+   * strip-to-results 只依赖这份配置，不再写死任何一个引擎的参数名。
+   */
+  readonly pagination?: PaginationConfig;
+
+  /**
+   * 直答区候选选择器。命中节点会先清理再保留到重写后的页面。
+   * 缺省表示该引擎没有需要保留的直答区。
+   */
+  readonly answerNodeSelector?: string;
 
   /** 广告 / 推广位节点选择器（需实测校准） */
   getAdSelectors(): string[];
@@ -160,4 +181,29 @@ export interface EngineSession {
 export interface MenuEntry {
   label: string;
   href: string;
+}
+
+/**
+ * 分页参数配置。
+ *
+ * 约定：偏移量 = (页码 - 1) * 每页条数 + offsetBase。
+ *   Bing `first=` 为 1 起（第 2 页 first=11）；
+ *   Google `start=` 为 0 起（第 2 页 start=10）。
+ */
+export interface PaginationConfig {
+  /** 承载结果偏移量的查询参数名（first / start …） */
+  readonly param: string;
+  /** 第 1 条结果的偏移值：Bing 1，Google 0 */
+  readonly offsetBase: 0 | 1;
+  /** 偏移量不足时使用的每页条数 */
+  readonly defaultSize: number;
+  /** 每页条数的合法档位，用于把实际条数归位 */
+  readonly sizeChoices: readonly number[];
+  /**
+   * 分页线索选择器：命中即认为分页链接已渲染。
+   * 必须落在**可点的链接**上，而不是空容器上。
+   */
+  readonly hintSelector: string;
+  /** 分页容器选择器，用于读取页码数字与兜底数字 */
+  readonly pageContainers: readonly string[];
 }

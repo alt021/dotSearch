@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -38,7 +38,7 @@ const server = createServer((_q, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}/bing.html`;
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 
 /** 在指定 URL 上跑一遍脚本，读列表与按钮的状态 */
 async function probe(url, label) {

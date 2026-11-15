@@ -11,7 +11,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -43,7 +43,7 @@ const server = createServer((_q, res) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const pageUrl = `http://127.0.0.1:${server.address().port}/bing.html?q=test`;
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 
 /** 在指定视口渲染并采集布局度量 */
 async function measure(width, height) {
@@ -69,6 +69,15 @@ async function measure(width, height) {
     const item = document.querySelector('.se-item');
     const style = item ? getComputedStyle(item) : null;
     const columns = style?.gridTemplateColumns ?? '';
+    /*
+     * Obscura 不一定暴露 gridTemplateColumns；结构上「序号 + 内容」
+     * 两栏仍然可以断言。优先用 computed 值，取不到时退化为直接子元素。
+     */
+    const directColumns = item
+      ? [...item.children].filter(
+          (el) => el.classList.contains('se-num') || el.classList.contains('se-body'),
+        ).length
+      : 0;
 
     return {
       rootPadLeft: cs('#se-root', 'paddingLeft'),
@@ -79,7 +88,7 @@ async function measure(width, height) {
       titleFont: cs('.se-title', 'fontSize'),
       tagFont: cs('.se-tag', 'fontSize'),
       // 列数：桌面始终两列（序号栏 + 内容）
-      itemCount: columns.split(' ').filter(Boolean).length,
+      itemCount: Math.max(columns.split(' ').filter(Boolean).length, directColumns),
       itemGap: style?.columnGap ?? null,
       itemPadTop: style?.paddingTop ?? null,
       itemPadBottom: style?.paddingBottom ?? null,

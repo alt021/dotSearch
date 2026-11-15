@@ -1,12 +1,12 @@
 import type { Feature } from '../types/feature.js';
-import type { EngineAdapter, SearchResult } from '../types/engine.js';
+import type { EngineAdapter, PaginationConfig, SearchResult } from '../types/engine.js';
 import { log } from '../core/env.js';
 import { getRules, matchRule, type FilterRule } from './filter-store.js';
 import { isPrivacyEnabled } from './settings-store.js';
 import { cleanAddressBar, sanitizeSearchUrl } from './privacy.js';
 
 /**
- * 结果页重写：把 Bing 结果页替换为「搜索框 + 干净的结果列表」。
+ * 结果页重写：把搜索引擎结果页替换为「搜索框 + 干净的结果列表」。
  *
  * 与「删掉多余元素、留下原站 DOM」的做法不同，这里**不复用任何原站结果节点**：
  * 先用 EngineAdapter 把结果解析成结构化数据，再从零构建 DOM。
@@ -15,20 +15,29 @@ import { cleanAddressBar, sanitizeSearchUrl } from './privacy.js';
  *   - 重建后的 DOM 完全可控，视觉重设计不受原站结构束缚
  *   - 结果已结构化（标题/摘要/真实 URL/来源），后续做排序、过滤、去广告都很直接
  *
- * 副作用：原站搜索框随 #b_header 一起消失，其 pushState 换词机制随之失效。
+ * 副作用：原站搜索框随顶栏一起消失，其 pushState 换词机制随之失效。
  * 因此必须补一个搜索框，并用整页跳转（location.assign）提交，
  * 保证每次搜索都能重新触发本脚本。
  */
 
 /**
- * 直答区候选。
+ * 分页配置的兜底值。
  *
- * 实测 `#b_context` 是右侧栏「更多结果」的容器，
- * 其下的 `<li class="b_ans">` 既可能承载真正的直答模块，
- * **也可能只是「相关搜索」**(`<div class="b_rs rsExplr">`)，后者不应保留。
- * 因此这里只做候选收集，由 pruneAnswerNode() 逐个甄别。
+ * 已接入拼页的引擎都会提供自己的 PaginationConfig（Bing first=1 起、
+ * Google start=0 起）；这里的默认值只在适配器漏配时兜底，
+ * 不应被当作任何一个引擎的真实行为。
  */
-const ANSWER_SELECTOR = '#b_context .b_ans';
+const DEFAULT_PAGINATION: PaginationConfig = {
+  param: 'first',
+  offsetBase: 1,
+  defaultSize: 10,
+  sizeChoices: [10, 20, 30, 50],
+  hintSelector: 'a[href*="first="], .b_pag a, .sb_pagF a, .sb_pag a',
+  pageContainers: ['.b_pag', '.sb_pagF', '.sb_pag', 'nav[aria-label]', 'nav[role="navigation"]'],
+};
+
+/** 当前页面的分页配置；由 resolvePagination() 在重写时写入 */
+let pagination: PaginationConfig = DEFAULT_PAGINATION;
 
 /**
  * 「相关搜索」模块的识别特征。
@@ -75,15 +84,6 @@ export const LIST_ID = 'se-list';
 /** 缓存本次重写时的解析结果，供过滤规则变化后重建列表 */
 let lastSearchResults: SearchResult[] = [];
 
-/**
- * 每页条数的兜底值。
- *
- * 只在「偏移量差推不出、当前页条数也拿不到」时才会用到 ——
- * 必应桌面版是 10。真正的来源是 `detectPageSize()` 的偏移差与
- * `sizeHint`（当前页条数）。
- */
-const DEFAULT_PAGE_SIZE = 10;
-
 /** 页码上限：只为解析异常数据设一个护栏，不代表实际能翻到这么多页 */
 const MAX_PAGE_COUNT = 50;
 
@@ -94,7 +94,7 @@ const MAX_PAGE_COUNT = 50;
  *   - 序号要从「当前页的全局起点」接着数；
  *   - 「加载更多」要知道每页条数、当前页号，才能拼出下一页地址。
  */
-let pageSize = DEFAULT_PAGE_SIZE;
+let pageSize = DEFAULT_PAGINATION.defaultSize;
 let pageNumber = 1;
 
 /** 拼下一页地址所用的基址、搜索词参数与原站给出的总页数 */
@@ -261,23 +261,27 @@ export const stripToResults: Feature = {
      * 它们决定「加载更多」拼出的下一页地址与初始按钮是否显示。
      * 原站本就没有分页时等满超时，属正常情况。
      */
-    await waitForPagination(1_000);
+    await waitForPagination(engine.pagination?.hintSelector, 1_000);
 
     // ---- 1. 解析结果为结构化数据（必须在清空 DOM 之前完成）---------------
     const results = engine.extractResults(container);
-    resolvePagination(engine.searchForm.param, results.length);
+    resolvePagination(engine, results.length);
 
     /*
      * 直答区：逐个甄别后再保留。
-     * 该节点是唯一会保留到新页面的原站内容，需做三项清理：
+     * 选择器由适配器提供；Bing 的 #b_context .b_ans 既可能承载直答模块，
+     * 也可能只是「相关搜索」。保留前需做三项清理：
      *   1. 剔除「相关搜索」模块（用户明确不需要）
      *   2. 剔除内联 <style>/<link>，否则原站 CSS 会泄漏进改写后的页面
      *   3. 剔除备案号、隐私政策等合规链接
      * 清理后若已无实质内容，则整体丢弃，不留空壳。
      */
-    const answerNodes = Array.from(
-      document.querySelectorAll<HTMLElement>(ANSWER_SELECTOR),
-    ).filter((node) => pruneAnswerNode(node));
+    const answerSelector = engine.answerNodeSelector;
+    const answerNodes = answerSelector
+      ? Array.from(document.querySelectorAll<HTMLElement>(answerSelector)).filter((node) =>
+          pruneAnswerNode(node),
+        )
+      : [];
 
     // ---- 2. 先把新页面整个建好（纯内存操作，尚未触碰原站页面）--------------
     //
@@ -403,7 +407,7 @@ function buildMasthead(query: string, count: number, engine: EngineAdapter): HTM
 
   const brand = document.createElement('p');
   brand.className = 'se-brand';
-  // 用强调色方块作为唯一点缀，呼应瑞士国旗
+  // 用强调色方块作为唯一点缀
   const mark = document.createElement('span');
   mark.className = 'se-mark';
   mark.setAttribute('aria-hidden', 'true');
@@ -696,7 +700,7 @@ function bindHiddenToggle(root: HTMLElement): void {
    * 浏览器「按下鼠标即聚焦」——聚焦后若元素可聚焦，
    * 会画出焦点环。占位条本身不可聚焦（无 href、无 tabindex），
    * 但点击仍可能让**祖先**拿到 :focus-within，
-   * 于是整条套上一个红框。这里阻止按下时的默认聚焦动作，
+   * 于是整条套上一个焦点框。这里阻止按下时的默认聚焦动作，
    * 从源头断掉焦点环的产生。
    * 只在真正命中占位条时拦，避免影响正常条目的点击与文本选择。
    */
@@ -784,8 +788,9 @@ function applyLinkAttrs(anchor: HTMLAnchorElement, href: string | undefined): vo
  *
  * ## 现方案：只读取「有几页」，下一页地址自己拼
  *
- * 唯一跨场景稳定的信息是 first= 这个结果偏移量
- * （第 N 页 = first=(N-1)*10+1）。它同时出现在：
+ * 唯一跨场景稳定的信息是「结果偏移量」这个数字
+ * （Bing 的 first=、Google 的 start=；第 N 页 = 偏移基准 + (N-1)*每页条数）。
+ * 它同时出现在：
  *   - 翻页链接的 href 里
  *   - 页面内联脚本的配置数据里
  *
@@ -793,27 +798,16 @@ function applyLinkAttrs(anchor: HTMLAnchorElement, href: string | undefined): vo
  * 再用当前 URL 自己拼出下一页的地址。加载更多不依赖原站链接是否可点。
  */
 
-/** 从 URL 串中提取 first= 偏移量 */
-const FIRST_PARAM_RE = /[?&]first=(\d+)/g;
-
 /**
- * 分页「线索」= **真正可点的页码链接**，而不是分页容器。
+ * 从 URL 串中提取分页偏移量。
  *
- * ⚠️ 这里踩过坑：原先把 `.b_pag` / `.sb_pagF` 这些**容器**当线索，
- * 而必应是「先渲染空容器、稍后才填页码」的两步 ——
- * 于是等待函数一看到容器就立刻返回，紧接着提取到 0 个页码，
- * 页面表现为「原站分了 3 页却只显示 1 页」，且时快时慢（竞态）。
- * 判据必须落在容器**内部的链接**上：
- *   - `a[href*="first="]`  换页链接（Bing 的页码都带 first= 偏移）
- *   - `.b_pag a` / `.sb_pagF a`  容器内的页码链接
- * 注意 `.b_pag` 内还有一个 `<link rel="stylesheet">`，
- * 但那是 `<link>` 不是 `<a>`，不会被误判。
+ * 参数名由适配器提供（Bing first、Google start），
+ * 不能在这里写死任何一个 —— 否则换引擎时整段分页都会静默失效。
  */
-export const PAGINATION_HINT_SELECTOR =
-  'a[href*="first="], .b_pag a, .sb_pagF a, .sb_pag a';
-
-/* 每页条数（DEFAULT_PAGE_SIZE）与页码上限（MAX_PAGE_COUNT）在文件顶部定义：
-   序号偏移与页头统计也要用，放在这里会导致模块求值时访问未初始化的 const。 */
+function offsetPattern(param: string, flags = 'g'): RegExp {
+  const escaped = param.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`[?&]${escaped}=(\\d+)`, flags);
+}
 
 /**
  * 等待分页线索出现（分页常晚于结果容器渲染）。
@@ -822,8 +816,8 @@ export const PAGINATION_HINT_SELECTOR =
  * 超时后返回（原站本就没有分页时属正常情况）。
  * 之所以用观察而非固定 sleep，是为了不无谓拖慢重写速度。
  */
-function waitForPagination(timeout: number): Promise<void> {
-  if (document.querySelector(PAGINATION_HINT_SELECTOR)) return Promise.resolve();
+function waitForPagination(hintSelector: string | undefined, timeout: number): Promise<void> {
+  if (!hintSelector || document.querySelector(hintSelector)) return Promise.resolve();
 
   return new Promise<void>((resolve) => {
     let settled = false;
@@ -831,7 +825,7 @@ function waitForPagination(timeout: number): Promise<void> {
 
     // 先声明观察者，finish 中才能安全引用（函数声明会提升）
     const observer = new MutationObserver(() => {
-      if (document.querySelector(PAGINATION_HINT_SELECTOR)) finish();
+      if (document.querySelector(hintSelector)) finish();
     });
 
     function finish(): void {
@@ -848,35 +842,32 @@ function waitForPagination(timeout: number): Promise<void> {
 }
 
 
-/** 收集归集范围内出现的所有 first= 偏移量 */
+/** 收集归集范围内出现的所有分页偏移量 */
 function collectPageOffsets(root: ParentNode = document): number[] {
   const offsets = new Set<number>();
-
-  // 来源 1：带 first= 的翻页链接（最可靠）
-  for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    const raw = a.getAttribute('href') ?? '';
-    // 带 g 标志的正则是有状态的，复用前必须重置 lastIndex
-    FIRST_PARAM_RE.lastIndex = 0;
+  const pattern = offsetPattern(pagination.param);
+  const scan = (raw: string): void => {
+    // 带 g 标志的正则是状态对象，复用前必须重置 lastIndex
+    pattern.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = FIRST_PARAM_RE.exec(raw))) {
+    while ((m = pattern.exec(raw))) {
       const n = Number(m[1]);
       if (Number.isFinite(n)) offsets.add(n);
     }
+  };
+
+  // 来源 1：带偏移参数的翻页链接（最可靠）
+  for (const a of root.querySelectorAll<HTMLAnchorElement>('a[href]')) {
+    scan(a.getAttribute('href') ?? '');
   }
 
   // 来源 2：整份 HTML 兜底，覆盖 onclick / 内联脚本 / 非 a 元素。
   // 仅在来源 1 无收获时启用，避免把无关参数误当页码。
   if (offsets.size === 0) {
-    const html = root instanceof Element ? root.innerHTML : document.documentElement.innerHTML;
-    FIRST_PARAM_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = FIRST_PARAM_RE.exec(html))) {
-      const n = Number(m[1]);
-      if (Number.isFinite(n)) offsets.add(n);
-    }
+    scan(root instanceof Element ? root.innerHTML : document.documentElement.innerHTML);
   }
 
-  return [...offsets].filter((n) => n >= 1).sort((a, b) => a - b);
+  return [...offsets].filter((n) => n >= pagination.offsetBase).sort((a, b) => a - b);
 }
 
 /**
@@ -885,9 +876,9 @@ function collectPageOffsets(root: ParentNode = document): number[] {
  * @param sizeHint 当前页**实际渲染出的结果条数**。只在无法从偏移量差值
  *   推断时启用。
  *
- * ⚠️ 不能只靠偏移量：分页控件有时只暴露一个 `first=`（例如只有「下一页」），
- * 偏移量集合里没有相邻差，于是这里会回退到默认的 10 —— 若真实每页条数
- * 不是 10，页号就会整页偏移一位，序号跟着错，用户看到的就是
+ * ⚠️ 不能只靠偏移量：分页控件有时只暴露一个偏移参数（例如只有「下一页」），
+ * 偏移量集合里没有相邻差，于是这里会回退到默认值 —— 若真实每页条数
+ * 不是默认值，页号就会整页偏移一位，序号跟着错，用户看到的就是
  * 「第二页又从 01 开始」。当前页满页时条数正好等于每页条数，用它兜底最可靠。
  *
  * ⚠️ 但条数必须**先归位到标准档位**再用：www 版会先渲染 1~9 条、
@@ -895,6 +886,23 @@ function collectPageOffsets(root: ParentNode = document): number[] {
  * 生成的第 3 页地址变成 `first=19`（仍落在第 2 页），后续页码整体错位。
  */
 function detectPageSize(offsets: number[], sizeHint = 0): number {
+  /*
+   * 优先用当前页实际条数归位后的档位，但必须先验证它与偏移量对得上。
+   *
+   * 为什么不能只看相邻偏移差：分页控件可能只给「上一页 / 下一页」，
+   * 两个偏移相差 2 页（Google 第 2 页常见 start=0 与 start=20），
+   * 直接取差值会把每页条数算成 20，当前页号随之算错。
+   *
+   * 对齐检查同时接受 0-based 与 1-based：Bing 的 first= 两种约定都存在，
+   * Google 的 start= 是 0-based。
+   */
+  if (sizeHint > 0) {
+    const snapped = snapPageSize(sizeHint);
+    if (offsets.length === 0 || offsets.every((offset) => offsetAligns(offset, snapped))) {
+      return snapped;
+    }
+  }
+
   // 相邻偏移量之差即每页条数；取最小正值以兼容不连续的偏移集合
   const diffs: number[] = [];
   for (let i = 1; i < offsets.length; i++) {
@@ -906,27 +914,30 @@ function detectPageSize(offsets: number[], sizeHint = 0): number {
   }
   if (diffs.length > 0) return Math.min(...diffs);
   if (sizeHint > 0) return snapPageSize(sizeHint);
-  return DEFAULT_PAGE_SIZE;
+  return pagination.defaultSize;
 }
 
-/** 必应「每页结果数」的可选档位（设置页里就是这几档） */
-const PAGE_SIZE_CHOICES = [10, 20, 30, 50];
+/** 偏移量是否符合 0-based 或 1-based 的整页对齐 */
+function offsetAligns(offset: number, size: number): boolean {
+  return (offset - pagination.offsetBase) % size === 0 || offset % size === 0;
+}
 
 /** 把实际渲染条数向上归位到标准档位（9 → 10、13 → 20） */
 function snapPageSize(sizeHint: number): number {
-  return PAGE_SIZE_CHOICES.find((n) => n >= sizeHint) ?? sizeHint;
+  return pagination.sizeChoices.find((n) => n >= sizeHint) ?? sizeHint;
 }
 
-/** 第 1 页为 1；URL 不带 first= 即第 1 页 */
+/** 第 1 页为 1；URL 不带偏移参数即第 1 页 */
 function currentPageNumber(size: number): number {
-  const raw = new URL(location.href).searchParams.get('first');
-  const offset = raw === null ? 1 : Number(raw);
-  if (!Number.isFinite(offset) || offset <= 1) return 1;
+  const raw = new URL(location.href).searchParams.get(pagination.param);
+  if (raw === null) return 1;
+  const offset = Number(raw);
+  if (!Number.isFinite(offset)) return 1;
   /*
    * 与生成链接时同一套换算（见 offsetToPage 的说明）：
-   * 必应的 first= 有 1-based（11/21）与 0-based（10/20）两种约定，
-   * floor(offset / size) + 1 对两者都成立。
-   * 早前这里写的是 floor((offset-1)/size)+1，0-based 会少算一页。
+   * Bing 的 first= 有 1-based（11/21）与 0-based（10/20）两种约定，
+   * Google 的 start= 是 0-based（0/10/20）。
+   * floor(offset / size) + 1 对这几种都成立。
    */
   return offsetToPage(offset, size);
 }
@@ -937,18 +948,20 @@ function currentPageNumber(size: number): number {
  * 实测 Bing 的 first= 存在两种约定，同一站点不同渲染都可能出现：
  *   1-based：第 2 页 first=11、第 3 页 first=21（每页 10 条）
  *   0-based：第 2 页 first=10、第 3 页 first=20（每页 10 条）
- * 用 floor(offset / pageSize) + 1 可同时覆盖两者：
+ * Google 的 start= 则是 0-based：第 2 页 start=10、第 3 页 start=20。
+ * 用 floor(offset / pageSize) + 1 可同时覆盖：
  *   floor(11/10)+1 = 2 ✓   floor(21/10)+1 = 3 ✓
  *   floor(10/10)+1 = 2 ✓   floor(20/10)+1 = 3 ✓
+ *   floor(0/10)+1  = 1 ✓
  * 若写成 floor((offset-1)/pageSize)+1，0-based 情形会少算一页。
  */
 function offsetToPage(offset: number, pageSize: number): number {
   return Math.floor(offset / pageSize) + 1;
 }
 
-/** 页码 → 偏移量（生成链接时用 1-based，Bing 两种约定都接受） */
+/** 页码 → 偏移量（Bing 1-based，Google 0-based，由适配器声明） */
 function pageToOffset(page: number, pageSize: number): number {
-  return (page - 1) * pageSize + 1;
+  return (page - 1) * pageSize + pagination.offsetBase;
 }
 
 /**
@@ -977,11 +990,11 @@ function collectRenderedPageNumbers(root: ParentNode = document): number[] {
 
     /*
      * 必须确认这是分页链接，否则会把「10 条结果」之类的数字误当页码。
-     * 判据：带 first= 参数，或位于分页容器内。
+     * 判据：带分页偏移参数，或位于分页容器内。
      */
     const paginated =
-      /[?&]first=\d+/.test(href) ||
-      a.closest('.b_pag, .sb_pagF, .sb_pag, nav[aria-label], nav[role="navigation"]') !== null;
+      offsetPattern(pagination.param).test(href) ||
+      a.closest(pagination.pageContainers.join(', ')) !== null;
     if (!paginated) continue;
 
     const n = Number(numText);
@@ -1003,9 +1016,9 @@ function buildPageHref(base: URL, page: number, pageSize: number, queryParam: st
   const url = new URL(source.href);
   if (page <= 1) {
     // 第 1 页是默认值，去掉参数让地址更干净
-    url.searchParams.delete('first');
+    url.searchParams.delete(pagination.param);
   } else {
-    url.searchParams.set('first', String(pageToOffset(page, pageSize)));
+    url.searchParams.set(pagination.param, String(pageToOffset(page, pageSize)));
   }
   return url.href;
 }
@@ -1016,14 +1029,12 @@ let lastPaginationDebug = '';
 /**
  * 最后的兜底：从分页容器里的纯数字元素推断总页数。
  *
- * 用于「翻页链接由 JS 驱动、没有 href，因而不含 first=」的布局。
+ * 用于「翻页链接由 JS 驱动、没有 href，因而不含偏移参数」的布局。
  * 仅作为没有偏移量线索时的替代方案，优先级最低。
  */
 function collectNumericPageHints(root: ParentNode = document): number[] {
   const nums = new Set<number>();
-  const scopes = root.querySelectorAll(
-    '.b_pag, .sb_pagF, .sb_pag, nav[aria-label], nav[role="navigation"]',
-  );
+  const scopes = root.querySelectorAll(pagination.pageContainers.join(', '));
   for (const scope of scopes) {
     for (const el of scope.querySelectorAll('a, span, div, li')) {
       const t = (el.textContent ?? '').trim();
@@ -1039,7 +1050,7 @@ function collectNumericPageHints(root: ParentNode = document): number[] {
  *
  * 总页数取各来源的最大值（偏保守，漏页比多页干扰小）：
  *   1. 原站渲染出的页码数字 —— 最权威，直接写着「2」「3」
- *   2. first= 偏移量反推 —— 覆盖页码文字非数字的情形
+ *   2. 偏移量反推 —— 覆盖页码文字非数字的情形
  *   3. 分页容器内的纯数字 —— 覆盖链接无 href 的 JS 驱动布局
  *
  * `max` 只来自线索，不含当前页：重写时若分页还没渲染完，
@@ -1072,17 +1083,19 @@ function readPaginationHints(root: ParentNode = document): {
  * 只读取「每页几条、当前第几页、原站说还有几页」——
  * 页码栏已移除，页面翻页由「加载更多」接管，这里不再生成任何链接。
  *
- * @param queryParam 引擎的搜索词参数名；隐私模式下净化分页基址时要用
+ * @param engine 当前引擎；分页参数与偏移基准由适配器提供
  * @param sizeHint 当前页实际结果条数，用于在偏移量不足时推断每页条数
  */
-function resolvePagination(queryParam = 'q', sizeHint = 0): void {
+function resolvePagination(engine: EngineAdapter, sizeHint = 0): void {
+  pagination = engine.pagination ?? DEFAULT_PAGINATION;
+  paginationQueryParam = engine.searchForm.param;
+
   const offsets = collectPageOffsets();
   pageSize = detectPageSize(offsets, sizeHint);
   const base = new URL(location.href);
   const current = currentPageNumber(pageSize);
   pageNumber = current;
   paginationBase = base;
-  paginationQueryParam = queryParam;
 
   const hints = readPaginationHints();
   paginationMaxPage = Math.min(Math.max(current, hints.max), MAX_PAGE_COUNT);

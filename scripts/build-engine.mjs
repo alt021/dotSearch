@@ -65,6 +65,13 @@ for (const engine of engineIds) {
     target: ['chrome100', 'firefox100', 'edge100', 'safari15'],
     charset: 'utf8',
     legalComments: 'none',
+    /*
+     * 正式产物做语法级压缩：目标引擎的构建期条件（如 Bing 专属的测试钩子）
+     * 会被折叠成 if(false)，minifySyntax 负责把整块删掉，
+     * 避免 Google 版里残留必应的账户 / 设置页字符串。
+     * 保留标识符与空白，便于发行包仍然可读。
+     */
+    minifySyntax: !dev,
     loader: { '.css': 'text' },
     define: { __SE_TARGET_ENGINE__: JSON.stringify(engine) },
     logLevel: 'silent',

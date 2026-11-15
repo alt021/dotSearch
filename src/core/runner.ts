@@ -13,6 +13,19 @@ import { detectEngine } from '../engines/index.js';
 import { ALL_FEATURES } from '../features/index.js';
 import css from '../styles/base.css';
 
+/**
+ * 把引擎主题色拼到基础样式之后。
+ *
+ * 同一条选择器（`:root`）后出现的声明覆盖先出现的，
+ * 因此不需要提高特异性，也不会碰引擎没声明的其它令牌。
+ */
+function themeCss(engine: EngineAdapter): string {
+  return (
+    `\n:root{--se-accent:${engine.theme.accent}}` +
+    `\n@media (prefers-color-scheme: dark){:root{--se-accent:${engine.theme.accentDark}}}`
+  );
+}
+
 export class Runner {
   private engine: EngineAdapter | null = null;
   private readonly active = new Set<Feature>();
@@ -80,7 +93,7 @@ export class Runner {
      */
     try {
       this.engine = engine;
-      injectStyle(css);
+      injectStyle(css + themeCss(engine));
       this.cssInjected = true;
 
       this.disposers.push(

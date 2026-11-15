@@ -17,9 +17,9 @@ export const ENGINE_IDS = ['bing', 'google', 'baidu'] as const;
  * - `GM_addStyle`    注入样式表。
  * - `GM_getValue` / `GM_setValue`
  *   过滤规则与附加设置的持久化。**必须用脚本级存储而不是 localStorage**：
- *   必应按 IP 分流，cn.bing.com 与 www.bing.com 是两个源，
- *   而 localStorage 按源隔离 —— 用它会导致「在 cn 配好的规则
- *   到 www 上看不到也不生效」。脚本级存储跨源共享，正好对症。
+ *   搜索引擎会按域名/IP 分化（Bing 的 cn / www，Google 的各国域名），
+ *   而 localStorage 按源隔离 —— 用它会导致「在一个域名配好的规则
+ *   到另一个域名看不到也不生效」。脚本级存储跨源共享，正好对症。
  *
  * 早前移除 GM_getValue / GM_setValue 是判断失误（当时只考虑了数据量与权限面，
  * 漏了跨源这一条）；用户反馈配置不互通后改回。
@@ -53,12 +53,20 @@ export interface EngineBuild {
   slug: string;
   /** 该引擎生效的 @match 规则 */
   matches: string[];
+  /**
+   * 额外的 @include 规则（Tampermonkey 支持正则形式）。
+   * 用于 Google 这类域名后缀无法用 @match 穷举的引擎。
+   */
+  includes?: string[];
+  /** 脚本管理器列表里显示的图标文件名（assets/icon/ 下），缺省为项目主标识 dotsearch.svg */
+  iconFile?: string;
 }
 
 export const ENGINE_BUILDS: Record<string, EngineBuild> = {
   bing: {
     displayName: 'dotSearch for Bing',
     slug: 'bing',
+    iconFile: 'dotsearch-bing.svg',
     /*
      * ⚠️ 第一条通配已覆盖必应的**全部**搜索前端：
      * www / cn / www2 / www4 …（以及以后新增的别名），
@@ -91,9 +99,24 @@ export const ENGINE_BUILDS: Record<string, EngineBuild> = {
   google: {
     displayName: 'dotSearch for Google',
     slug: 'google',
+    iconFile: 'dotsearch-google.svg',
+    /*
+     * 列出常见地区入口，方便阅读与排查；真正的兜底是下面的 @include 正则。
+     * Google 的地区域名远不止这些，@match 无法用 `google.*` 通配
+     * （@match 不允许把 * 放在域名中间），所以必须补一条正则。
+     */
     matches: [
       '// @match        *://www.google.com/search*',
       '// @match        *://www.google.com.hk/search*',
+      '// @match        *://www.google.co.jp/search*',
+      '// @match        *://www.google.co.uk/search*',
+      '// @match        *://www.google.com.tw/search*',
+      '// @match        *://www.google.com.sg/search*',
+      '// @match        *://www.google.de/search*',
+      '// @match        *://www.google.fr/search*',
+    ],
+    includes: [
+      '// @include      /^https?:\\/\\/(?:www\\.)?google\\.[a-z]{2,3}(?:\\.[a-z]{2})?\\/search(?:[\\/?#]|$)/',
     ],
   },
 
@@ -140,6 +163,18 @@ const REPO = 'https://github.com/alt021/dotSearch';
  */
 const RAW = 'https://raw.githubusercontent.com/alt021/dotSearch/main';
 
+/**
+ * 各引擎的脚本图标地址。
+ *
+ * 项目文档与 lockup 保持瑞士红主标识；具体产物按引擎换点色：
+ * Bing 用旧标绿点，Google 用品牌蓝点，未指定者沿用主标识。
+ */
+export function iconFor(engine: string = DEFAULT_ENGINE): string {
+  const build = ENGINE_BUILDS[engine];
+  if (!build) throw new Error(`未知引擎：${engine}`);
+  return `${RAW}/assets/icon/${build.iconFile ?? 'dotsearch.svg'}`;
+}
+
 export const META = {
   namespace: REPO,
   homepage: REPO,
@@ -150,15 +185,17 @@ export const META = {
    * 脚本图标（脚本管理器的列表里显示的那一枚）。
    *
    * 早期借用了必应自己的青色 favicon —— 于是「脚本列表里的图标」与
-   * 「页头品牌」是两套互不相干的视觉，页头是红方块、图标却是必应的。
-   * 现在统一为项目自己的 mark：纯黑 + 瑞士红，透明底，无底板。
+   * 「页头品牌」是两套互不相干的视觉，页头是色块、图标却是必应的。
+   * 现在统一为项目自己的 mark：纯黑 + 引擎强调色，透明底，无底板。
    *
-   * 指向仓库内的 `assets/icon/dotsearch.svg`。与 @downloadURL 不同，
-   * 这个文件**是源码、会随仓库提交**，所以推送后即可取到；
-   * 深色底用的反白版是 `dotsearch-reverse.svg`（脚本管理器侧没有深色变体这个说法，
-   * 故头部只用正版）。
+   * 图标文件由 `ENGINE_BUILDS[id].iconFile` 决定，缺省指向项目主标识
+   * `assets/icon/dotsearch.svg`。与 @downloadURL 不同，这个文件**是源码、
+   * 会随仓库提交**，所以推送后即可取到；深色底用的反白版是
+   * `dotsearch-reverse.svg`（脚本管理器侧没有深色变体这个说法，故头部只用正版）。
+   * Bing 版使用 `dotsearch-bing.svg`（绿点），Google 版使用
+   * `dotsearch-google.svg`（蓝点）；项目文档仍用红点主标识。
    */
-  icon: `${RAW}/assets/icon/dotsearch.svg`,
+  icon: iconFor(),
   runAt: 'document-start',
   noframes: true,
 } as const;
@@ -208,8 +245,9 @@ export function buildMetaBlock(pkg: MetaOptions): string {
     // 开发模式下以本机服务为准，避免 Tampermonkey 校验 404 的远端地址
     `// @downloadURL  ${pkg.dev ? `${DEV_SERVER}/${artifact}` : remote}`,
     ...(pkg.dev ? [`// @updateURL    ${DEV_SERVER}/${artifact}`] : [`// @updateURL    ${remote}`]),
-    `// @icon         ${META.icon}`,
+    `// @icon         ${iconFor(engineId)}`,
     ...build.matches,
+    ...(build.includes ?? []),
     ...GRANTS.map((g) => `// @grant        ${g}`),
     `// @run-at       ${META.runAt}`,
     ...(META.noframes ? ['// @noframes'] : []),

@@ -64,7 +64,14 @@ check('页头不再有「隐私检索」标记', !/隐私检索/.test(src));
 check('包内无 document.cookie 写入', !/document\.cookie\s*=/.test(src));
 
 /* ---- 注入范围 ---- */
-check('注入全部必应入口', /bing\.com\/search\*/.test(head));
+if (engine === 'bing') {
+  check('注入全部必应入口', /bing\.com\/search\*/.test(head));
+} else if (engine === 'google') {
+  check(
+    '注入 Google 地区域名',
+    /google\.com\/search\*/.test(head) && /@include\s+\/\^https/.test(head),
+  );
+}
 
 /* ---- 功能完整性：每项能力都要在包内 ---- */
 const features = [
@@ -82,13 +89,23 @@ const features = [
   ['净化：地址栏改写', 'cleanAddressBar'],
   ['永页机停用', 'initedPagetual'],
   ['深色模式', 'prefers-color-scheme'],
-  ['账户会话采集', 'captureSession'],
   ['菜单入口', 'se-menu-popup'],
-  // 设置页清理：折叠已被取代的设置项
-  ['设置页识别', 'isSettingsPage'],
-  ['待折叠设置清单', 'getSupersededSettings'],
-  ['折叠 UI', 'se-setting-fold'],
 ];
+
+if (engine === 'bing') {
+  features.push(
+    ['账户会话采集', 'captureSession'],
+    // 设置页清理：折叠已被取代的设置项
+    ['设置页识别', 'isSettingsPage'],
+    ['待折叠设置清单', 'getSupersededSettings'],
+    ['折叠 UI', 'se-setting-fold'],
+  );
+} else if (engine === 'google') {
+  features.push(
+    ['Google 搜索设置入口', '/preferences'],
+    ['Google 分页参数 start', 'param: "start"'],
+  );
+}
 
 /*
  * ---- 拼页：按钮与自动加载，旧的页码栏必须彻底消失 ----
@@ -111,6 +128,30 @@ for (const [label, needle] of features) {
   check(label, src.includes(needle));
 }
 
+/* ---- 强调色：每个产物只带自己的品牌色 ---- */
+const theme =
+  engine === 'bing'
+    ? {
+        own: ['#008373', '#2ec4a6'],
+        foreign: ['#4285f4', '#8ab4f8', '#e30613', '#ff2a34'],
+      }
+    : engine === 'google'
+      ? {
+          own: ['#4285f4', '#8ab4f8'],
+          foreign: ['#008373', '#2ec4a6', '#e30613', '#ff2a34'],
+        }
+      : null;
+if (theme) {
+  check(
+    '强调色是本引擎品牌色',
+    theme.own.every((color) => src.toLowerCase().includes(color)),
+  );
+  check(
+    '未混入其它引擎强调色',
+    theme.foreign.every((color) => !src.toLowerCase().includes(color)),
+  );
+}
+
 /* ---- 界面文案（发布版本对用户可见，不能被误删） ---- */
 check('净化说明文案', src.includes('去除链接中的跟踪条目，其余不再变动'));
 check('过滤功能说明', src.includes('屏蔽指定网站的搜索结果'));
@@ -118,9 +159,26 @@ check('开关标签为净化链接', src.includes('净化链接'));
 check('自动加载开关标签', src.includes('自动加载更多结果'));
 check('自动加载说明文案', src.includes('每次检索最多加载 100 条结果'));
 
-/* ---- 未启用的引擎不应混入 ---- */
-check('未混入 Google 适配器', !src.includes('www.google.com/search'));
-check('未混入百度适配器', !src.includes('www.baidu.com/s'));
+/* ---- 引擎隔离：不能把另一个引擎的专有入口带进来 ---- */
+if (engine === 'google') {
+  /*
+   * 用户明确要求 Google 版不提供 Rewards、不做账号登录状态检测。
+   * 这些反向断言比「有搜索设置」更重要 —— 它们证明必应专有逻辑没有混入。
+   */
+  check('不提供 Microsoft Rewards', !/rewards\.bing\.com|Microsoft Rewards/.test(src));
+  check(
+    '不含必应账户 / 登录判据',
+    !/account\.microsoft\.com|readTopBarSession|#id_a|#id_l|#id_p/.test(src),
+  );
+  check(
+    '不含必应设置页折叠',
+    !/\.b_vPanel|#settings_suggestions|#newwnd|#newsnt/.test(src),
+  );
+  check('未混入百度适配器', !src.includes('www.baidu.com/s'));
+} else {
+  check('未混入 Google 适配器', !src.includes('www.google.com/search'));
+  check('未混入百度适配器', !src.includes('www.baidu.com/s'));
+}
 
 /* ---- 文件本身 ---- */
 const bytes = statSync(file).size;

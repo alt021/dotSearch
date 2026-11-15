@@ -49,6 +49,8 @@ const INJECT_FLAG = '__searchEnhanceBing__';
 export const bing: EngineAdapter = {
   id: 'bing',
   name: 'Bing',
+  // 2016 版 Bing 旧标绿；深色下用同色相的提亮值保证对比度
+  theme: { accent: '#008373', accentDark: '#2ec4a6' },
   /*
    * 仅供日志与调试查看，**不求穷举** ——
    * 识别一律走 isBingHost 的后缀判定，新增备用子域不必改这里。
@@ -58,6 +60,17 @@ export const bing: EngineAdapter = {
   resultContainerSelector: '#b_results',
   resultItemSelector: 'li.b_algo',
   searchForm: { path: '/search', param: 'q' },
+
+  pagination: {
+    param: 'first',
+    offsetBase: 1,
+    defaultSize: 10,
+    sizeChoices: [10, 20, 30, 50],
+    hintSelector: 'a[href*="first="], .b_pag a, .sb_pagF a, .sb_pag a',
+    pageContainers: ['.b_pag', '.sb_pagF', '.sb_pag', 'nav[aria-label]', 'nav[role="navigation"]'],
+  },
+
+  answerNodeSelector: '#b_context .b_ans',
 
   isSearchPage(url) {
     return isBingHost(url.hostname) && url.pathname === '/search';

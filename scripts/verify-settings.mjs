@@ -23,7 +23,7 @@ import { createServer as createHttp } from 'node:http';
 import { readFileSync, existsSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -73,7 +73,7 @@ const port = server.address().port;
 const pageUrl = `http://127.0.0.1:${port}/account/general`;
 console.log(`服务：${pageUrl}\n`);
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 const page = await browser.newPage({ viewport: { width: 1280, height: 1600 } });
 
 /*

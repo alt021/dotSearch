@@ -31,14 +31,28 @@ for (const engine of engines) {
     continue;
   }
   const src = await readFile(file, 'utf8');
+  const head = src.slice(0, src.indexOf('==/UserScript=='));
 
   check('脚本体名为「' + build.displayName + '」', src.includes(`// @name         ${build.displayName}\n`));
   check('目标引擎常量已注入', src.includes(`targetId = ${JSON.stringify(engine)}`));
+  const foreignMatches = Object.entries(meta.ENGINE_BUILDS)
+    .filter(([id]) => id !== engine)
+    .flatMap(([, other]) => other.matches);
   check(
     '只带了本引擎的 @match',
-    build.matches.every((m) => src.includes(m)) &&
-      !/google\.com\/search/.test(src.split('==/UserScript==')[0].replace(build.matches.join('\n'), '')),
+    build.matches.every((m) => head.includes(m)) &&
+      foreignMatches.every((m) => !head.includes(m)) &&
+      (head.match(/@match\s/g) ?? []).length === build.matches.length,
   );
+  check(
+    '带上了本引擎的 @include',
+    (build.includes ?? []).every((m) => head.includes(m)),
+  );
+  check('脚本图标对应本引擎', head.includes(`// @icon         ${meta.iconFor(engine)}`));
+  const iconFile = build.iconFile ?? 'dotsearch.svg';
+  const icon = await readFile(join(root, 'assets', 'icon', iconFile), 'utf8');
+  const dotColor = { bing: '#008373', google: '#4285F4' }[engine] ?? '#E30613';
+  check('图标色点为本引擎强调色', icon.includes(`fill="${dotColor}"`));
   check('头部闭合', src.includes('// ==/UserScript=='));
   /*
    * 权限面：只需样式 + 脚本级存储。

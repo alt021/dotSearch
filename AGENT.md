@@ -5,14 +5,17 @@
 不是给原站打补丁，而是把结果页整个换掉：用统一结构重建结果列表，
 再在此之上做完整的视觉风格化。
 
-- **当前主力引擎**：Bing。搜索前端有多个**等价**入口：
+- **已支持引擎**：Bing、Google（各自独立产物）。Bing 的搜索前端有多个**等价**入口：
   `www` / `cn` / `www2` / `www4` …（必应按 IP 分流，同一个域名在不同
   网络下给出中国版或全球版；备用子域也随可用性增删）。
   脚本用 `*.bing.com` 通配注入，站点识别走**后缀判定**，新增别名无需改代码。
-- **预留扩展**：Google、百度（适配器已写好骨架，尚未接入调度）
+  Google 按国家/地区分布到 `google.com.hk` / `google.co.jp` / `google.de` …，
+  用正则 `@include` + 后缀判定覆盖；只接管网页搜索，不碰图片/视频/新闻。
+- **预留扩展**：百度（适配器骨架仍在，尚未接入调度）
 - **构建**：TypeScript → esbuild → **每个引擎一个独立产物**
-  （`dist/dotSearch-bing.user.js`）。一份源码、按 `--engine=<id>` 分别产出，
-  各引擎的 `@match` 与脚本体名互不干扰
+  （`dist/dotSearch-bing.user.js` / `dist/dotSearch-google.user.js`）。
+  一份源码、按 `--engine=<id>` 分别产出，各引擎的 `@match` 与脚本体名互不干扰；
+  构建期条件会把其它引擎的适配器裁掉，Google 产物里不会出现 Bing 的账户判据。
 
 ---
 
@@ -22,11 +25,14 @@
 npm install         # 安装依赖
 npm run watch       # 监听 src/ 变更，自动重建（开发版）
 npm run serve       # 起本地服务，供 Tampermonkey 以 URL 安装
-npm run build       # 单次构建（正式版，仅 bing）
+npm run build       # 单次构建（正式版，默认 bing）
+npm run build:google # 构建 Google 正式产物
 npm run build:all   # 构建全部已启用引擎的产物
 npm run check       # 仅做 TypeScript 类型检查
 npm run verify      # 类型检查 + 构建
-npm run release     # 构建 + 产物自检 + 发版前检查（见「验证体系」）
+npm run verify:google # Google 离线适配器 + 结果页 + 拼页验证
+npm run sample:google # 网络可用时抓取真实 Google 页面（可换地区域名 / 代理）
+npm run release:all # 两个产物分别做发版前检查
 ```
 
 构建产物已进 `.gitignore`，属于生成物：
@@ -251,9 +257,9 @@ src/
 │   ├── env.ts               日志、样式注入
 │   └── dom.ts               waitForSelector / SPA 导航监听 / 文本归一化
 ├── engines/
-│   ├── index.ts             引擎注册表（enabled 控制是否参与匹配）
+│   ├── index.ts             引擎注册表（按 __SE_TARGET_ENGINE__ 裁剪）
 │   ├── bing.ts              ✅ 已接入（含账户入口、设置页折叠清单）
-│   ├── google.ts            ⏸ 预留
+│   ├── google.ts            ✅ 已接入（地区域名、start= 拼页、无账户钩子）
 │   └── baidu.ts             ⏸ 预留
 ├── features/
 │   ├── index.ts             功能注册表（顺序即执行顺序）
@@ -270,29 +276,35 @@ src/
 └── styles/base.css           重建后的基础样式
 
 scripts/
-├── lib/browser.mjs           测试浏览器入口（统一指向本机 Chromite）
+├── lib/browser.mjs           测试浏览器入口（统一指向本机 Obscura，CDP）
 ├── build.mjs                 esbuild 打包（支持 --dev / --watch / --engine）
 ├── build-engine.mjs          按引擎构建（位置参数，避开 shell 吞引号）
 ├── serve.mjs                 本地静态服务，供 Tampermonkey 以 URL 安装
 ├── fetch-sample.mjs          抓取真实 Bing 结果页快照
+├── fetch-google-sample.mjs   抓取真实 Google 结果页（换地区域名 / 代理校准）
 ├── fetch-settings-page.mjs   抓取必应设置页快照（验证折叠用）
 ├── verify-strip.mjs          离线快照验证（不依赖网络，深度断言）
 ├── verify-live.mjs           实时站点验证（真实 Bing，可换入口 / 代理）
 ├── verify-responsive.mjs     桌面版式验证（不同窗口宽度下布局一致）
 ├── verify-pagination.mjs     拼页状态：按钮就位、序号随 first= 连续
+├── verify-google.mjs         Google：适配器纯逻辑 + 离线 SERP + start= 拼页
 ├── verify-session.mjs        账户会话检测（桌面顶栏）
 ├── verify-settings.mjs       附加设置与设置页折叠验证
 ├── verify-sanitize.mjs       链接净化单测
-├── verify-artifacts.mjs      产物自检（头部、产物名、@match）
-├── verify-release.mjs        发版前检查
+├── verify-artifacts.mjs      产物自检（头部、产物名、@match / @include、图标）
+├── verify-release.mjs        发版前检查（按引擎）
 └── check-underline.mjs       菜单文字下划线目视校验（需人工看截图）
 
-assets/icon/                  标识（唯一来源，README 与 @icon 共用）
-├── dotsearch.svg             图标正版：#111 + #E30613，透明底
-├── dotsearch-reverse.svg     反白版：深色底用，#FFF + #FF2A34
-├── lockup.svg                图标 + 字标（README 页头）
-├── lockup-dark.svg           同上，反白
-└── preview.html              标识规格页（正/反、尺寸阶梯、构造取值、色值）
+assets/icon/                  标识与各引擎变体（唯一来源，README 与 @icon 共用）
+├── dotsearch.svg             项目主标识：正版 #111 + #E30613 红点，透明底
+├── dotsearch-reverse.svg     主标识反白版：#FFF + #FF2A34
+├── dotsearch-bing.svg        Bing 产物：#111 + #008373 绿点
+├── dotsearch-bing-reverse.svg    Bing 反白版：#FFF + #2EC4A6
+├── dotsearch-google.svg      Google 产物：#111 + #4285F4 蓝点
+├── dotsearch-google-reverse.svg  Google 反白版：#FFF + #8AB4F8
+├── lockup.svg                项目主标识 + 字标（README 页头，红点红 Search）
+├── lockup-dark.svg           同上，反白（#FF2A34）
+└── preview.html              标识规格页（红点主标识；正/反、尺寸阶梯、构造取值、色值）
 ```
 
 ---
@@ -307,8 +319,11 @@ assets/icon/                  标识（唯一来源，README 与 @icon 共用）
 - `src/meta.ts` 的 `ENGINE_BUILDS` 是唯一配置点：`displayName`、`slug`、`matches`。
   新增引擎在这里加一项，构建侧只需 `--engine=<id>`。
 - 构建时通过 esbuild 的 `define` 注入 `__SE_TARGET_ENGINE__`，
-  运行期由 `engines/index.ts` 据此**只启用目标引擎** ——
-  一份源码不会在错误站点上注册多余的适配器。
+  `engines/index.ts` 用构建期条件**只把目标引擎放进注册表**。
+  不能用「全部 import、运行时 filter」：esbuild 无法删除运行时分支，
+  另一个引擎的适配器（Rewards、账户判据）会留在产物里。
+- 正式构建开启 `minifySyntax`，把 `if(false)` 一类的死代码整块删掉；
+  开发构建保留可读格式。
 - 产物名由 `slug` 派生（`dotSearch-bing.user.js`），
   构建脚本、本地服务、验证脚本都从同一处取，**不写死文件名**。
 
@@ -317,16 +332,20 @@ assets/icon/                  标识（唯一来源，README 与 @icon 共用）
 标识与代码分开存放，**唯一来源是 `assets/icon/`**：脚本头部的 `@icon`、
 README 的页头都指向那里的文件，改图标只换文件，不动代码。
 
-- `META.icon` 由 `RAW` 前缀派生（与 `@downloadURL` 同一个前缀常量）。
+- `ENGINE_BUILDS[id].iconFile` 决定该引擎的 `@icon`，由 `iconFor()` 派生
+  （与 `@downloadURL` 同一个 `RAW` 前缀常量）。Bing 版用绿点图标，
+  Google 版用蓝点图标；**项目文档与 README 始终使用红点主标识**，
+  不要因为产物换色而把文档里的 lockup / preview 一并改色。
 - ⚠️ **与 `@downloadURL` 不同的是它现在就能生效**：`dist/` 是生成物、不提交，
   那个地址要等 CI 或 Release 才通；而 `assets/` 是**源码、会随仓库提交**，
   所以 `@icon` 推送后即可取到 —— 这是图标没有走 `dist/` 的原因。
-- ⚠️ **无底板 + 只有黑红的代价：纯黑在深色底上会消失。** 处理办法是每个标识
-  配一份反白版（黑→白、红→`#FF2A34`，与深色令牌同值），README 用
+- ⚠️ **无底板 + 只有黑与强调色的代价：纯黑在深色底上会消失。** 处理办法是每个标识
+  配一份反白版（黑→白、强调色→深色提亮值），README 用
   `<picture>` + `prefers-color-scheme` 自动切换。
   ❌ **不要用「加底板」来解决** —— 那等于把图标做成卡片，与「无底板」的约定相抵。
 - README 只在顶部放一枚 lockup（图标 + 字标），正文保持原样。
-  红色只出现在字标里的 `Search` —— 与站内「红色全站仅一处」是同一条原则。
+  文档字标里只把 `Search` 染红，与红点同色 —— 与站内「强调色全站仅一处」是同一条原则。
+  引擎产物各自换点色，但文档标识不跟着换。
 - ⚠️ README 的图片块要包在 `<p>` 里：裸 `<picture>` 在部分 Markdown 渲染器
   里会被当成行内 HTML，与相邻内容挤到同一行。
 
@@ -339,6 +358,7 @@ README 的页头都指向那里的文件，改图标只换文件，不动代码�
 
 小尺寸的判据只有一条：**红点在 16px 下必须是能看见的色块**。
 初版 `r=3.75` 在浏览器标签页里缩成一个红点，才加到 `4.4`。
+几何对所有引擎变体一致，只替换点色（Bing 绿 / Google 蓝）。
 
 ### 引擎适配（`EngineAdapter`）
 
@@ -353,6 +373,7 @@ README 的页头都指向那里的文件，改图标只换文件，不动代码�
 | `getAdSelectors` | 广告 / 推广位选择器 |
 | `extractResults` | 提取标题、链接、摘要 |
 | `isAlreadyInjected` / `markInjected` | 防止 SPA 重复注入 |
+| `theme` | 本引擎的强调色（浅色 / 深色），必填 |
 
 必应的 `isSearchPage` 用**后缀判定**（`bing.com` 及其任意子域 + `/search`），
 而不是主机名白名单。它的搜索前端有 www / cn / www2 / www4 等多个等价入口，
@@ -414,14 +435,31 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
 
 ---
 
-## 接入 Google / 百度
+## 接入新引擎 / Google 的特殊点
 
-三步：
+新增引擎的步骤：
 
-1. 在 `src/engines/index.ts` 里把对应条目改为 `enabled: true`。
-2. 在 `src/meta.ts` 的 `ENGINE_BUILDS` 里加一项（`displayName` / `slug` /
-   该引擎的 `matches`），然后用 `npm run build -- --engine=<id>` 验证产物头部。
-3. 实测校正适配器里的选择器——**这是最容易出错的一步**，务必在真实结果页上验证。
+1. 在 `src/engines/` 新增适配器，并在 `src/meta.ts` 的 `ENGINE_BUILDS` 加一项
+   （`displayName` / `slug` / `matches` / 可选 `includes` / `iconFile`）。
+2. 实现 `pagination`（偏移参数、0/1 起、每页条数档位、分页线索选择器），
+   再把引擎 id 加进 `load-more.ts` 与 `pagetual-guard.ts` 的 `engines`。
+3. 实测校正选择器——**这是最容易出错的一步**，务必在真实结果页上验证。
+
+Google 额外注意：
+
+- 地区域名不能用 `@match` 穷举（不允许 `google.*` 这种中间通配），
+  所以在 `ENGINE_BUILDS.google.includes` 里放正则 `@include`，
+  适配器内部再用 `GOOGLE_HOST_RE` 做后缀判定。
+- 只接管网页搜索：`isSearchPage` 排除 `tbm=` 与 `udm=` 的非网页垂直搜索。
+- 分页是 `start=`（0 起），Bing 是 `first=`（1 起）；两者共用
+  `PaginationConfig`，不要在 `strip-to-results` 里写死参数名。
+- Google 版**不实现** `captureSession` / `getAccountEntry` / `isSettingsPage` /
+  `getSupersededSettings`：不提供账户状态检测、Rewards 或设置页折叠。
+  菜单只剩「附加设置」与「搜索设置」（指向当前地区域的 `/preferences`）。
+- 验证：`npm run verify:google` 用路由拦截伪造 Google SERP，不依赖网络；
+  它覆盖 `<地区域>/search`、`/url?q=` 解码、广告剔除、`start=10` 拼页与负例。
+  本机共享代理访问 Google 会触发 `/sorry/index`（HTTP 429），所以没有把
+  Google 实时验证纳入默认门禁；网络可用时用 `npm run sample:google` 抓真实页面校准。
 
 ---
 
@@ -440,11 +478,12 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
 | `npm run verify:www4` | 同上，换备用入口 `www4.bing.com` |
 | `npm run verify:responsive` | 桌面版式：不同窗口宽度下布局一致，SHOW MORE 始终就位 |
 | `npm run verify:pagination` | 拼页状态：旧页码栏已移除，序号随 `first=` 连续 |
+| `npm run verify:google` | Google 离线验证：地区域名、网页搜索识别、SERP 重写、`start=` 拼页、无账户入口 |
 | `npm run verify:session` | 账户会话检测（桌面顶栏） |
 | `npm run verify:settings` | 附加设置面板与设置页折叠 |
 | `npm run verify:sanitize` | 链接净化单测（不起浏览器） |
-| `npm run verify:artifacts` / `release` | 产物自检与发版前检查 |
-| `npm run verify:all` | 离线浅色 + 离线深色 + 实时 document-start |
+| `npm run verify:artifacts` / `release:bing` / `release:google` | 按引擎的产物自检与发版前检查 |
+| `npm run verify:all` | 两个引擎的离线验证 + 实时 Bing document-start |
 
 三条经验值得记住：
 
@@ -453,8 +492,14 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
   （国际版整页无反应就是这么来的）。
 - **`--proxy` 与 `--host` 都要跑。** 必应按 IP 分流、又有多个等价入口，
   一版的时序问题另一版不一定复现。
-- **所有验证统一在本机 Chromite 中运行**（路径在 `scripts/lib/browser.mjs`，
-  改浏览器只改这一处）。浏览器进程不能在沙箱里启动，跑验证要放开沙箱。
+- **所有验证统一在本机 Obscura 中运行**（路径在 `scripts/lib/browser.mjs`，
+  改浏览器只改这一处）。Obscura 通过 `obscura serve` 暴露 CDP，
+  验证脚本用 `playwright-core` 的 `connectOverCDP()` 驱动；
+  本地验证页需要 `--allow-private-network`。
+- **Obscura 0.2.x 的能力边界要记住**：不产生新标签页、`:focus` / `:hover`
+  的 CSS 匹配不可靠、`getComputedStyle().userSelect` 为空、
+  表单控件的 border 简写不解析 `var()`。`verify-strip` 已按这些限制
+  跳过对应视觉断言，其它 DOM / 网络 / 重写断言仍然有效。
 
 ---
 
@@ -475,7 +520,7 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
 - 顶部直答区逐项甄别后保留（剔相关搜索、剔内联样式、剔合规链接）
 - 补一个搜索框（原站搜索框随重写移除，详见下方「已知取舍」）
 
-实测（真实 Bing 快照 + 本机 Chromite）：DOM **378 → 56 节点**，10 条结果全保留，
+实测（真实 Bing 快照 + 本机 Obscura）：DOM **378 → 56 节点**，10 条结果全保留，
 原站元素与 `li.b_algo` 残留均为 0，跳转链接残留 0。
 
 序号是**全局**的：第 2 页的第一条是第 11 条结果，不从 01 重数；
@@ -583,7 +628,7 @@ badge 标签位置与结果完好性、hide 保留序号与灰字占位、
 | --- | --- |
 | 网格 | 左栏等宽序号（01/02…）+ 右栏内容， 强列对齐 |
 | 字体 | Helvetica 系无衬线；序号与来源 URL 用等宽字体区分层级 |
-| 色彩 | 纯黑白 + 唯一强调红 `#E30613`（瑞士国旗色），全站仅此一色 |
+| 色彩 | 纯黑白 + 唯一引擎强调色：Bing 旧标绿 `#008373` / Google 蓝 `#4285F4`，全站仅此一色 |
 | 分隔 | 细规则线切割条目，**不用卡片阴影** |
 | 留白 | 大间距是版面组成，不是浪费 |
 | 拒绝 | 无圆角、无阴影、无渐变、无悬浮抬升 |
@@ -592,7 +637,7 @@ DOM 结构相应调整：新增 `se-num` 序号栏、`se-body` 内容栏、`se-m
 （品牌方块 + 查询词大字 + 结果计数，以 3px 粗规则线收束）；来源 URL 移至标题之上，
 即瑞士风格典型的元信息前置手法。
 
-**深色模式**：跟随系统 `prefers-color-scheme`，深色下强调红提亮至 `#ff2a34` 保证对比度。
+**深色模式**：跟随系统 `prefers-color-scheme`，深色下强调色提亮（Bing `#2ec4a6` / Google `#8ab4f8`）保证对比度。
 两种模式均已截图实测。
 
 验证：
@@ -619,7 +664,7 @@ npm run sample                  # 重新抓取离线快照
   post-load 注入时 `document.head` / `body` 早已存在，
   测不出「文档树还没建立就去访问它」这类问题 —— 而线上正是这么挂的。
 - `--proxy` —— 必应按 IP 分流：直连落到 `cn.bing.com`（中国版），
-  经本机 7897 代理落到 `www.bing.com`（国际版）。
+  经本机 7890 代理落到 `www.bing.com`（国际版；可用 `SE_PROXY` 覆盖）。
   国际版会多做一次 `rdr=1` 重定向，时序与国内版不同，历史上出过
   启动即崩、整个增强功能无反应的故障，因此国际版也要单独跑。
 - `--host=<域名>` —— 换搜索入口，默认 `www.bing.com`。
@@ -630,11 +675,11 @@ npm run sample                  # 重新抓取离线快照
 
 两个开关可以叠加（`npm run verify:intl` 就是「国际版 + document-start」）。
 
-所有验证脚本统一在本机 **Chromite** 中运行，
+所有验证脚本统一在本机 **Obscura** 中运行，
 路径与启动方式收敛在 `scripts/lib/browser.mjs`，改浏览器只需改这一处。
 
-实时验证用**持久化配置目录**（`.build/chromite-profile`）：
-默认的临时 profile 每次都是「新访客」，而 Bing 对首次访问会做一次
+实时验证用**持久化配置目录**（`.build/obscura-profile`，即 Obscura 的
+`--storage-dir`）：默认的临时 profile 每次都是「新访客」，而 Bing 对首次访问会做一次
 带 `rdr=1` 的重定向，把已重写好的 DOM 整个冲掉。保留 Cookie 后
 即表现为回访用户，与真实使用一致。需要干净的初次访问时删掉该目录即可。
 

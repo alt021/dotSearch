@@ -62,10 +62,10 @@ if (!targetEngine) {
    *
    * 永页机顶层执行后会排一个约 300ms 的初始化任务；本脚本是
    * document-start，在 Runner 启动（要等 DOM）之前完成这一步，
-   * 它检查到标记就会直接退出。只在必应上做 —— 只有必应接入了
-   * 本脚本自己的拼页，其它引擎把永页机赶走就没人翻页了。
+   * 它检查到标记就会直接退出。只对本脚本自己接管拼页的引擎做 ——
+   * 其它引擎把永页机赶走就没人翻页了。
    */
-  if (targetEngine.id === 'bing') setPagetualOptOut();
+  if (targetEngine.pagination) setPagetualOptOut();
 
   const runner = new Runner();
 
@@ -87,7 +87,11 @@ if (!targetEngine) {
   );
 
   /*
-   * 测试钩子：仅在强制模式下暴露，正常使用时不挂任何全局。
+   * 测试钩子：仅在强制模式与必应产物下暴露，正常使用时不挂任何全局。
+   *
+   * 设置页清理是必应专有能力；Google 版没有设置页折叠，
+   * `verify-settings` 也只驱动 Bing 产物。这里用构建期常量包裹，
+   * 让 Google 产物里连这段测试代码都不出现。
    *
    * 存在的理由：设置页清理靠 hostname 判定「这是不是我的页面」，
    * 而验证脚本跑在 127.0.0.1 上，该判定会（正确地）返回 false，
@@ -97,24 +101,26 @@ if (!targetEngine) {
    * 后者改的是被测量本身，前者只是换了个调用入口，
    * 被测的折叠代码仍是产物里的真实实现。
    */
-  if (forceEngine) {
-    (globalThis as Record<string, unknown>).__SE_TEST_HOOK__ = {
-      /*
-       * 测试钩子。传入一个「看起来像真实设置页」的 URL。
-       *
-       * 为什么要伪造 URL 而不是直接用 location.href：
-       * 设置页清理会先问引擎「这是不是我的设置页」，而测试跑在
-       * 127.0.0.1 上必然为 false。测试要验的是**折叠逻辑**，
-       * 不是 hostname 判定（那条由纯函数单测覆盖），
-       * 因此这里给一个 bing 域名即可，被测代码路径完全不变。
-       */
-      runSettingsCleanup: (): void => {
-        void settingsCleanup.onNavigate({
-          engine: targetEngine,
-          query: '',
-          url: new URL('https://www.bing.com/account/general'),
-        });
-      },
-    };
+  if (__SE_TARGET_ENGINE__ === 'bing') {
+    if (forceEngine) {
+      (globalThis as Record<string, unknown>).__SE_TEST_HOOK__ = {
+        /*
+         * 测试钩子。传入一个「看起来像真实设置页」的 URL。
+         *
+         * 为什么要伪造 URL 而不是直接用 location.href：
+         * 设置页清理会先问引擎「这是不是我的设置页」，而测试跑在
+         * 127.0.0.1 上必然为 false。测试要验的是**折叠逻辑**，
+         * 不是 hostname 判定（那条由纯函数单测覆盖），
+         * 因此这里给一个 bing 域名即可，被测代码路径完全不变。
+         */
+        runSettingsCleanup: (): void => {
+          void settingsCleanup.onNavigate({
+            engine: targetEngine,
+            query: '',
+            url: new URL('https://www.bing.com/account/general'),
+          });
+        },
+      };
+    }
   }
 }

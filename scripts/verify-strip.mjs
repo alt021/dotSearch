@@ -14,7 +14,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { NEW_TABS_SUPPORTED, OBSCURA_SUPPORTS, launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 // 第一个非 flag 参数才当作样例路径，避免 --dark 之类被误认成路径。
@@ -65,7 +65,7 @@ const { port } = server.address();
 // 带上 q 参数，让页头能显示查询词与统计（样例快照的 URL 本就没有）
 const pageUrl = `http://127.0.0.1:${port}/bing.html?q=test`;
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 // 视口需足够高：默认 1280×720 会让测试目标落到视口外，
 // 导致 mouse.move 的坐标无效、悬停断言误判为「未生效」。
 const page = await browser.newPage({
@@ -82,6 +82,18 @@ const foreignErrors = [];
 page.on('pageerror', (e) => errors.push(String(e)));
 page.on('console', (m) => {
   if (m.type() === 'error') errors.push(m.text());
+});
+
+/*
+ * 样例页里的外链脚本/样式指向线上域名。本地服务对任何路径都返回 HTML，
+ * 于是外链脚本被当成 JS 解析、抛出一串 SyntaxError —— 那是快照环境噪音，
+ * 不是本脚本的错误。把非本机请求一律拦掉，测试只依赖快照里的内联内容
+ * 与本脚本注入的样式。
+ */
+await page.route('**/*', (route) => {
+  const url = new URL(route.request().url());
+  if (url.hostname === '127.0.0.1' && url.port === String(port)) return route.continue();
+  return route.abort();
 });
 
 // 从 http 加载样例页面，来源合法，Bing 内联脚本不会因 cookie 权限中断
@@ -111,8 +123,12 @@ await page.evaluate((src) => {
 await page.waitForTimeout(1500);
 
 // 只把「注入之后新增」的报错算作本项目的问题
+const SNAPSHOT_NOISE_RE =
+  /^(SyntaxError: Unexpected token '<'|Dynamic script fetch error: HTTP 0|ReferenceError: (BingAtWork|NewTabOptout|NewTabOptin)\b)/;
 for (const e of errors) {
-  if (!baselineErrors.includes(e)) foreignErrors.push(e);
+  if (baselineErrors.includes(e)) continue;
+  if (SNAPSHOT_NOISE_RE.test(e)) continue;
+  foreignErrors.push(e);
 }
 
 const after = await page.evaluate(() => ({
@@ -236,6 +252,9 @@ const after = await page.evaluate(() => ({
       document.querySelector('.se-title'),
     ).userSelect,
     snippetUserSelect: getComputedStyle(document.querySelector('.se-snippet')).userSelect,
+    // Obscura 不实现 user-select 的 computed style，返回空串；此时跳过相关断言
+    userSelectSupported:
+      getComputedStyle(document.querySelector('.se-item')).userSelect !== '',
   },
   // 原站跳转链接应已被解析为真实地址
   redirectLeakCount: [...document.querySelectorAll('.se-link')].filter((a) =>
@@ -312,6 +331,16 @@ await page.mouse.click(queryBox.x + queryBox.width / 2, queryBox.y + queryBox.he
 await page.waitForTimeout(120);
 queryState.focused = await outlineOf();
 queryState.statOnFocus = await page.locator('.se-stat').textContent();
+/*
+ * Obscura 的 CSS 引擎不实现 :focus 选择器（activeElement 正确，但
+ * matches(':focus') 为 false），因此聚焦态的 outline 断言只在浏览器
+ * 真正支持 :focus 时执行。
+ */
+queryState.focusPseudoSupported =
+  OBSCURA_SUPPORTS.focusState &&
+  (await page.evaluate(
+    () => document.querySelector('.se-query')?.matches(':focus') ?? false,
+  ));
 
 // 改动后失焦：应立即复原。
 // 用键盘 Tab 移开焦点，比点击特定坐标可靠（不依赖元素位置与配色）。
@@ -319,6 +348,20 @@ await page.keyboard.type('被用户改过的内容');
 const typed = await queryInput.inputValue();
 await page.keyboard.press('Tab');
 await page.waitForTimeout(150);
+/*
+ * Obscura 不实现 Tab 键的焦点移动。若按键后焦点仍在输入框，
+ * 直接 blur 一次，继续验证失焦处理器本身的行为。
+ */
+const stillFocused = await page.evaluate(
+  () => document.activeElement?.classList.contains('se-query') ?? false,
+);
+if (stillFocused) {
+  await page.evaluate(() => {
+    const el = document.activeElement;
+    if (el instanceof HTMLElement) el.blur();
+  });
+  await page.waitForTimeout(150);
+}
 queryState.typedValue = typed;
 queryState.afterBlurValue = await queryInput.inputValue();
 queryState.statAfterBlur = await page.locator('.se-stat').textContent();
@@ -326,7 +369,7 @@ queryState.restored = queryState.afterBlurValue !== typed;
 
 /**
  * 实测悬停反馈：鼠标停在**非标题区域**（如序号或摘要）时，
- * 标题也应变红并展开下划线 —— 即反馈作用于整条卡片，而非仅标题本身。
+ * 标题也应变为强调色并展开下划线 —— 即反馈作用于整条卡片，而非仅标题本身。
  *
  * 注意：必须用 mouse.move（按坐标）而非 locator.hover()。
  * 因为 .se-hit 铺满整条且 z-index 最高，Playwright 的 hover 会认为
@@ -348,7 +391,8 @@ const hoverTitleAt = async (x, y) => {
 
 const hoverProbe = await page.evaluate(() => {
   const s = getComputedStyle(document.querySelector('.se-link'));
-  return { color: s.color, size: s.backgroundSize };
+  const num = getComputedStyle(document.querySelector('.se-num'));
+  return { color: s.color, size: s.backgroundSize, numColor: num.color };
 });
 
 const box = await page.locator('.se-item').first().boundingBox();
@@ -365,6 +409,15 @@ const snipBox = await page.locator('.se-item .se-snippet').first().boundingBox()
 // 悬停到摘要（非标题区域）
 const onSnippet = await hoverTitleAt(snipBox.x + 30, snipBox.y + snipBox.height / 2);
 const onNum = await hoverTitleAt(numBox.x + numBox.width / 2, numBox.y + numBox.height / 2);
+/*
+ * Obscura 的 CSS 引擎不实现 :hover（matches(':hover') 始终 false），
+ * 悬停相关断言只在浏览器真正支持时执行。
+ */
+const hoverPseudoSupported =
+  OBSCURA_SUPPORTS.hoverState &&
+  (await page.evaluate(
+    () => document.querySelector('.se-item')?.matches(':hover') ?? false,
+  ));
 const onOutside = await hoverTitleAt(5, 5);
 
 /**
@@ -414,16 +467,20 @@ await page.context().route('**', (route) => {
 const titleBox = await page.locator('.se-item .se-link').first().boundingBox();
 let popupOpened = false;
 let popupUrl = null;
-try {
-  const [popup] = await Promise.all([
-    page.waitForEvent('popup', { timeout: 5_000 }),
-    page.mouse.click(titleBox.x + titleBox.width / 2, titleBox.y + titleBox.height / 2),
-  ]);
-  popupOpened = true;
-  popupUrl = popup.url().slice(0, 50);
-  await popup.close().catch(() => {});
-} catch {
-  popupOpened = false;
+if (NEW_TABS_SUPPORTED) {
+  try {
+    const [popup] = await Promise.all([
+      page.waitForEvent('popup', { timeout: 5_000 }),
+      page.mouse.click(titleBox.x + titleBox.width / 2, titleBox.y + titleBox.height / 2),
+    ]);
+    popupOpened = true;
+    popupUrl = popup.url().slice(0, 50);
+    await popup.close().catch(() => {});
+  } catch {
+    popupOpened = false;
+  }
+} else {
+  console.log('  （Obscura 不支持新标签页，跳过实际打开验证；以上属性检查仍然有效）');
 }
 
 // 恢复路由
@@ -690,7 +747,17 @@ console.log(
     ` inert=${menuAfterEsc.popupInert}`,
 );
 console.log(`  展开态截图：.build/${menuShot}`);
+// 必应强调色随配色模式而变：浅色 #008373 → rgb(0,131,115)，
+// 深色提亮为 #2ec4a6 → rgb(46,196,166)。
+const ACCENT_LIGHT = 'rgb(0, 131, 115)';
+const ACCENT_DARK = 'rgb(46, 196, 166)';
+const isDark = process.argv.includes('--dark');
+const ACCENT = isDark ? ACCENT_DARK : ACCENT_LIGHT;
+const accentOk = hoverProbe.numColor === ACCENT;
 console.log('=== 视觉调整 ===');
+console.log(
+  `  序号强调色：${hoverProbe.numColor}（应为 ${ACCENT}）  ${accentOk ? 'OK' : '未生效'}`,
+);
 console.log(
   `  红线 ::before content：${after.visual.beforeContent}（应为 none 或 normal）`,
 );
@@ -698,12 +765,6 @@ console.log(
   `  选择禁用：item=${after.visual.itemUserSelect} title=${after.visual.titleUserSelect}` +
     ` snippet=${after.visual.snippetUserSelect}`,
 );
-// 强调色随配色模式而变：浅色 #E30613 → rgb(227,6,19)，深色提亮为 #ff2a34 → rgb(255,42,52)。
-// 因此不能硬编码单一值，应取「未悬停色」以外的那个红色，或直接按模式判断。
-const ACCENT_LIGHT = 'rgb(227, 6, 19)';
-const ACCENT_DARK = 'rgb(255, 42, 52)';
-const isDark = process.argv.includes('--dark');
-const ACCENT = isDark ? ACCENT_DARK : ACCENT_LIGHT;
 const hoverOk = onSnippet.color === ACCENT && onSnippet.size.startsWith('100%');
 console.log(
   `  悬停非标题区（摘要）→ 标题 ${onSnippet.color} 下划线 ${onSnippet.size}` +
@@ -750,7 +811,7 @@ const linkOk =
   linkAttrs.hit.blank === linkAttrs.hit.total &&
   titleHitTest.isTheLink &&
   titleHitTest.target === '_blank' &&
-  popupOpened;
+  (popupOpened || !NEW_TABS_SUPPORTED);
 
 // 页头菜单：与标题同行、开关可见性、入口完整
 const menuOk =
@@ -799,6 +860,31 @@ const menuOk =
   menuAfterEsc.popupDisplay === 'none' &&
   menuAfterEsc.popupInert === true;
 
+if (!menuOk) {
+  console.log(
+    '  [菜单未通过] ' +
+      JSON.stringify({
+        exists: menuClosed.exists,
+        label: menuClosed.label,
+        sameRowAsBrand: menuClosed.sameRowAsBrand,
+        closedDisplay: menuClosed.popupDisplay,
+        closedInert: menuClosed.popupInert,
+        closedExpanded: menuClosed.expanded,
+        menuClickVia,
+        openDisplay: menuOpen.popupDisplay,
+        openInert: menuOpen.popupInert,
+        openExpanded: menuOpen.expanded,
+        openPosition: menuOpen.popupPosition,
+        linkCount: menuOpen.linkCount,
+        first: menuOpen.links?.[0],
+        sameSiteLinks: menuOpen.sameSiteLinks,
+        crossSiteLinks: menuOpen.crossSiteLinks,
+        afterEscDisplay: menuAfterEsc.popupDisplay,
+        afterEscInert: menuAfterEsc.popupInert,
+      }),
+  );
+}
+
 const pass =
   foreignErrors.length === 0 &&
   after.rootExists &&
@@ -822,16 +908,18 @@ const pass =
   queryState.hover.style === 'dashed' &&
   // 聚焦时虚线框应「不可见」：宽度归零即为不可见
   // （样式写成 0 dashed transparent 而非 none，是为清掉浏览器默认焦点环）
-  queryState.focused.width === '0px' &&
+  (!queryState.focusPseudoSupported || queryState.focused.width === '0px') &&
   queryState.normal.borderBottom === '0px' &&
+  // 强调色按引擎与配色模式解析
+  accentOk &&
   // 红线已移除：::before 无内容生成
   (after.visual.beforeContent === 'none' || after.visual.beforeContent === 'normal') &&
   // 整条不可选中
-  after.visual.itemUserSelect === 'none' &&
-  after.visual.titleUserSelect === 'none' &&
-  // 悬停非标题区时标题同样变红 + 展开下划线
-  hoverOk &&
-  onNum.color === ACCENT &&
+  (!after.visual.userSelectSupported ||
+    (after.visual.itemUserSelect === 'none' && after.visual.titleUserSelect === 'none')) &&
+  // 悬停非标题区时标题同样变为强调色 + 展开下划线
+  (!hoverPseudoSupported || hoverOk) &&
+  (!hoverPseudoSupported || onNum.color === ACCENT) &&
   // 可见区内不得有原站元素；隐藏数据源须存在且收纳了原站结果容器
   Object.values(after.leftovers).every((v) => v === 0) &&
   after.source.exists &&
@@ -860,13 +948,14 @@ for (const [k, v] of Object.entries({
   complianceLinks: after.compliance.count === 0,
   restored: queryState.restored,
   hoverStyle: queryState.hover.style === 'dashed',
-  focusedWidth: queryState.focused.width === '0px',
+  focusedWidth: !queryState.focusPseudoSupported || queryState.focused.width === '0px',
   normalBorder: queryState.normal.borderBottom === '0px',
+  accent: accentOk,
   beforeContent: after.visual.beforeContent === 'none' || after.visual.beforeContent === 'normal',
-  itemSelect: after.visual.itemUserSelect === 'none',
-  titleSelect: after.visual.titleUserSelect === 'none',
-  hoverOk,
-  numColor: onNum.color === ACCENT,
+  itemSelect: !after.visual.userSelectSupported || after.visual.itemUserSelect === 'none',
+  titleSelect: !after.visual.userSelectSupported || after.visual.titleUserSelect === 'none',
+  hoverOk: !hoverPseudoSupported || hoverOk,
+  numColor: !hoverPseudoSupported || onNum.color === ACCENT,
   leftovers: Object.values(after.leftovers).every((v) => v === 0),
   sourceExists: after.source.exists === true,
   sourceResultsInside: after.source.resultsInside > 0,
@@ -1401,6 +1490,12 @@ console.log(revealOk ? '  ✅ 单击恢复正常' : '  ❌ 单击恢复正常不
  */
 await page.mouse.move(5, 5);
 await page.waitForTimeout(200);
+// 点击恢复项可能让标题链接拿到焦点（:focus 着色）；先失焦再逐字段比较
+await page.evaluate(() => {
+  const el = document.activeElement;
+  if (el instanceof HTMLElement) el.blur();
+});
+await page.waitForTimeout(150);
 const parity = await page.evaluate((revealedNum) => {
   const pick = (li) => {
     const link = li.querySelector('.se-link');
@@ -1458,7 +1553,8 @@ const parityOk =
   parity.revived.classes === parity.control.classes &&
   parity.revived.hasTag === false &&
   parity.revived.hasSnippet === parity.control.hasSnippet &&
-  parity.revived.linkColor === parity.control.linkColor &&
+  (!OBSCURA_SUPPORTS.focusState ||
+    parity.revived.linkColor === parity.control.linkColor) &&
   parity.revived.linkDecoration === parity.control.linkDecoration &&
   parity.revived.hitHref === parity.control.hitHref &&
   parity.revived.hitTarget === parity.control.hitTarget &&
@@ -1537,7 +1633,7 @@ await clearRulesDirect();
  * 配色断言不写死色值，而是与当前主题下的 CSS 变量比对 ——
  * 这样浅色与深色两次运行（verify:strip / verify:strip --dark）都成立。
  */
-const styleState = await page.evaluate(() => {
+const styleState = await page.evaluate((supportsFormBorders) => {
   const css = (name) =>
     getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   // 把 #rrggbb 转成浏览器的 rgb() 形式，便于与 computed 值直接比对
@@ -1573,6 +1669,18 @@ const styleState = await page.evaluate(() => {
     return { bg: cs.backgroundColor, color: cs.color, border: cs.borderColor, font: cs.fontFamily, scheme: cs.colorScheme };
   };
 
+  /*
+   * Obscura 的 CSS 引擎不支持在 border 简写里解析 var()，会把颜色落成
+   * currentColor。用一个临时探针判断这一能力；不支持时边框配色断言跳过，
+   * 其余（底色 / 文字 / 字体）仍然照常检查。
+   */
+  const probe = document.createElement('div');
+  probe.style.border = '1px solid var(--se-line)';
+  document.body.appendChild(probe);
+  const borderVarSupported =
+    supportsFormBorders && getComputedStyle(probe).borderTopColor === vars.line;
+  probe.remove();
+
   // 统计原站样式表有没有被我们动过（被禁用即视为动过）
   let disabledForeign = 0;
   let totalForeign = 0;
@@ -1589,6 +1697,7 @@ const styleState = await page.evaluate(() => {
     rowSelect: pick('.se-filter-action'),
     addSelect: pick('.se-filter-select'),
     removeBtn: pick('.se-filter-remove'),
+    borderVarSupported,
     disabledForeign,
     totalForeign,
     ownStyleSheet: !!document.getElementById('search-enhance-styles'),
@@ -1608,13 +1717,14 @@ const styleState = await page.evaluate(() => {
       return el ? getComputedStyle(el).display : null;
     })(),
   };
-});
+}, OBSCURA_SUPPORTS.formControlBorders);
 
 console.log('=== 结果过滤：样式共存与控件配色 ===');
 console.log(
   `  原站样式表：共 ${styleState.totalForeign} 个，被我们禁用的 ${styleState.disabledForeign} 个（应为 0）`,
 );
 console.log(`  本脚本样式表存在：${styleState.ownStyleSheet}`);
+console.log(`  边框 var() 解析：${styleState.borderVarSupported ? '支持' : '不支持（跳过边框配色断言）'}`);
 console.log(`  过滤浮层宿主：${styleState.overlayHost ?? '(未打开)'}（应为 se-root）`);
 console.log(
   `  必应选中浮窗 #qs_searchBoxOuter：${styleState.qsBox ?? '(页面上尚未创建)'}` +
@@ -1640,14 +1750,17 @@ const usesOwnPalette = (el) =>
   !!el &&
   el.bg === styleState.vars.bg &&
   el.color === styleState.vars.fg &&
-  el.border === styleState.vars.line;
+  (!styleState.borderVarSupported || el.border === styleState.vars.line);
 
 /*
  * 按钮是另一种处理：透明底 + 前景色描边（见 .se-filter-add-btn/.se-filter-remove）。
  * 不套用上面的三件套判据，否则会把正确的样式误判为失败。
  */
 const isOutlineButton = (el) =>
-  !!el && el.bg === 'rgba(0, 0, 0, 0)' && el.color === styleState.vars.fg && el.border === styleState.vars.fg;
+  !!el &&
+  el.bg === 'rgba(0, 0, 0, 0)' &&
+  el.color === styleState.vars.fg &&
+  (!styleState.borderVarSupported || el.border === styleState.vars.fg);
 
 /*
  * 只比对字体栈的**首个**字族。
@@ -1675,6 +1788,27 @@ const stylesOk =
   isOutlineButton(styleState.removeBtn) &&
   /Helvetica/i.test(firstFamily(styleState.rowSelect)) &&
   /Helvetica/i.test(firstFamily(styleState.addSelect));
+
+if (!stylesOk) {
+  console.log(
+    '  [样式未通过] ' +
+      JSON.stringify({
+        ownStyleSheet: styleState.ownStyleSheet,
+        disabledForeign: styleState.disabledForeign,
+        totalForeign: styleState.totalForeign,
+        qsBox: styleState.qsBox,
+        overlayHost: styleState.overlayHost,
+        borderVarSupported: styleState.borderVarSupported,
+        vars: styleState.vars,
+        domainInput: styleState.domainInput,
+        rowSelect: styleState.rowSelect,
+        addSelect: styleState.addSelect,
+        removeBtn: styleState.removeBtn,
+        rowFont: firstFamily(styleState.rowSelect),
+        addFont: firstFamily(styleState.addSelect),
+      }),
+  );
+}
 
 console.log(stylesOk ? '  ✅ 样式共存与控件配色正确' : '  ❌ 样式共存或配色不符预期');
 
@@ -2088,7 +2222,8 @@ const settingsOk =
   settingsOpened.ok &&
   settingsOpened.title === '附加设置' &&
   settingsOpened.rowLabels?.[0] === '结果过滤设置' &&
-  settingsOpened.rowLabels?.[1] === '净化链接' &&
+  settingsOpened.rowLabels?.[1] === '自动加载更多结果' &&
+  settingsOpened.rowLabels?.[2] === '净化链接' &&
   settingsOpened.hasGoto &&
   settingsOpened.hasToggle &&
   settingsOpened.toggleRole === 'switch' &&

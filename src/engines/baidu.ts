@@ -10,6 +10,8 @@ import { text } from '../core/dom.js';
 export const baidu: EngineAdapter = {
   id: 'baidu',
   name: '百度',
+  // 尚未接入调度，沿用原基础版的瑞士红占位
+  theme: { accent: '#e30613', accentDark: '#ff2a34' },
   hostnames: ['www.baidu.com'],
 
   resultContainerSelector: '#content_left',

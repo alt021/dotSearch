@@ -26,17 +26,24 @@
 
 /** 净化模式下 URL 里允许保留的参数（引擎自身的搜索词参数另行保留） */
 const KEPT_PARAMS = new Set([
-  // 分页：第 N 页 = first 偏移，重写后的「加载更多」完全依赖它
+  // 分页偏移（Bing first / Google start）：重写后的「加载更多」完全依赖它
   'first',
+  'start',
   // 每页条数：若原地址指定了非默认值，丢掉会让页数与偏移的推算错位
   'count',
+  // Google 每页条数（num=）
+  'num',
+  // Google 的界面语言 / 地区 / 网页模式：丢掉会悄悄换一套结果
+  'hl',
+  'gl',
+  'udm',
 ]);
 
 /**
  * 净化一个搜索页地址：只保留搜索词与分页所需参数。
  *
  * @param url         原始地址
- * @param queryParam  该引擎的搜索词参数名（Bing 为 q，百度为 wd）
+ * @param queryParam  该引擎的搜索词参数名（Bing / Google 为 q，百度为 wd）
  * @returns 净化后的地址
  */
 export function sanitizeSearchUrl(url: URL, queryParam: string): URL {

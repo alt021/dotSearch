@@ -62,10 +62,10 @@ export const pagetualGuard: Feature = {
   name: '停用永页机',
   description: '检测到东方永页机时使其退出，拼页由本脚本负责。',
   /*
-   * 只在必应上启用：只有必应接入了「加载更多」，
+   * 只在本脚本自己接管拼页的引擎上启用：
    * 其它引擎若把永页机赶走就等于连翻页都没了。
    */
-  engines: ['bing'],
+  engines: ['bing', 'google'],
 
   supports() {
     return true;

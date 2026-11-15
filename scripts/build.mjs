@@ -99,6 +99,8 @@ function optionsFor(engineId) {
     legalComments: 'none',
     logLevel: 'info',
     minify,
+    // 正式产物折叠构建期条件并删除死代码；开发产物保持可读
+    minifySyntax: !dev,
     sourcemap: watch ? 'inline' : false,
     banner: { js: banner },
     loader: { '.css': 'text' },

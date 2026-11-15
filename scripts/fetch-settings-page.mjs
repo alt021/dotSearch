@@ -10,12 +10,12 @@ import { createServer } from 'node:http';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 mkdirSync(join(root, '.build'), { recursive: true });
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 const page = await browser.newPage({
   locale: 'zh-CN',
   viewport: { width: 1280, height: 1400 },

@@ -19,7 +19,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { launchChromite } from './lib/browser.mjs';
+import { launchObscura } from './lib/browser.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -36,7 +36,7 @@ const server = createServer((_q, r) => {
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const { port } = server.address();
 
-const browser = await launchChromite();
+const browser = await launchObscura();
 const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
 await page.goto(`http://127.0.0.1:${port}/bing.html?q=test`, { waitUntil: 'domcontentloaded' });
 
