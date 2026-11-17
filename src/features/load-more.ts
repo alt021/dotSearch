@@ -69,10 +69,10 @@ export const loadMore: Feature = {
   description: '在结果列表末尾追加下一页结果，不再跳转页码。',
   /*
    * 分页偏移参数由引擎适配器的 PaginationConfig 提供：
-   * Bing 是 first=（1 起），Google 是 start=（0 起）。
-   * 两个引擎都已接入 buildPageUrl；接新引擎时先补 pagination 配置再放开这里。
+   * Bing 是 first=（1 起），Google 是 start=（0 起），百度是 pn=（0 起）。
+   * 接入拼页的引擎都已实现 buildPageUrl；接新引擎时先补 pagination 配置再放开这里。
    */
-  engines: ['bing', 'google'],
+  engines: ['bing', 'google', 'baidu'],
 
   supports() {
     return true;

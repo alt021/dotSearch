@@ -8,6 +8,10 @@
  *   4. 拒绝装饰 —— 无圆角、无阴影、无渐变、无悬浮抬升效果
  *   5. 留白即呼吸 —— 大间距是版面的组成部分，不是浪费
  *
+ * 所有 rem 尺寸以 16px 根字号为基准。strip-to-results 重写时会把
+ * html.se-root-html 的 font-size 复位到 16px —— 百度等引擎会用
+ * 100px 根字号做 rem 布局，不复位会让整套版面放大数倍。
+ *
  * 后续精修可在此基础上迭代，本文件保持单一来源，不散落到其他位置。
  */
 
@@ -410,6 +414,10 @@ body.se-stripped > header {
   font-style: normal;
   line-height: 1.5;
   color: var(--se-muted);
+  /* 原站可能给 cite 设 nowrap / 省略号；这里强制完整换行显示 */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
   overflow-wrap: anywhere;
 }
 

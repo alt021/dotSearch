@@ -123,7 +123,19 @@ export const ENGINE_BUILDS: Record<string, EngineBuild> = {
   baidu: {
     displayName: 'dotSearch for Baidu',
     slug: 'baidu',
-    matches: ['// @match        *://www.baidu.com/s*'],
+    iconFile: 'dotsearch-baidu.svg',
+    matches: [
+      '// @match        *://www.baidu.com/s*',
+      '// @match        *://baidu.com/s*',
+    ],
+    /*
+     * 首页本身没有结果列表，注入它是为了在首次搜索走 AJAX 之前
+     * 拦截提交并强制整页跳到 /s。只匹配根路径 / index.html / 查询串，
+     * 不把脚本铺到百度的其它子页面。
+     */
+    includes: [
+      '// @include      /^https?:\\/\\/(?:www\\.)?baidu\\.com\\/(?:[?#]|index\\.html(?:[?#]|$)|$)/',
+    ],
   },
 };
 
@@ -155,32 +167,32 @@ export const ARTIFACT = artifactFor();
 const REPO = 'https://github.com/alt021/dotSearch';
 
 /**
- * 仓库内文件的直链前缀。
+ * 仓库内文件的 jsDelivr 公共 CDN 前缀。
  *
- * 与 REPO 分开列而不是从它拼：`raw.githubusercontent.com` 与 `github.com`
- * 是两个域，路径结构也不同（前者没有 `/blob/main` 这一段）。
- * 产物地址与图标地址都从这里派生，换仓库名只需改这一处。
+ * raw.githubusercontent.com 在部分网络下会间歇性加载失败（图标偶发不显示），
+ * 因此图标、更新地址与下载地址统一走 jsDelivr。
+ * 路径格式：`gh/<user>/<repo>@<branch>/<path>`。
  */
-const RAW = 'https://raw.githubusercontent.com/alt021/dotSearch/main';
+const CDN = 'https://cdn.jsdelivr.net/gh/alt021/dotSearch@main';
 
 /**
  * 各引擎的脚本图标地址。
  *
  * 项目文档与 lockup 保持瑞士红主标识；具体产物按引擎换点色：
- * Bing 用旧标绿点，Google 用品牌蓝点，未指定者沿用主标识。
+ * Bing 用旧标绿点，Google 用品牌蓝点，百度用 Logo 蓝，未指定者沿用主标识。
  */
 export function iconFor(engine: string = DEFAULT_ENGINE): string {
   const build = ENGINE_BUILDS[engine];
   if (!build) throw new Error(`未知引擎：${engine}`);
-  return `${RAW}/assets/icon/${build.iconFile ?? 'dotsearch.svg'}`;
+  return `${CDN}/assets/icon/${build.iconFile ?? 'dotsearch.svg'}`;
 }
 
 export const META = {
   namespace: REPO,
   homepage: REPO,
   supportURL: `${REPO}/issues`,
-  /** 正式发布地址（推到 GitHub 后生效） */
-  downloadURL: (artifact: string) => `${RAW}/dist/${artifact}`,
+  /** 正式发布地址（jsDelivr 只缓存仓库内文件；dist 需在仓库中才会生效） */
+  downloadURL: (artifact: string) => `${CDN}/dist/${artifact}`,
   /**
    * 脚本图标（脚本管理器的列表里显示的那一枚）。
    *
@@ -189,11 +201,13 @@ export const META = {
    * 现在统一为项目自己的 mark：纯黑 + 引擎强调色，透明底，无底板。
    *
    * 图标文件由 `ENGINE_BUILDS[id].iconFile` 决定，缺省指向项目主标识
-   * `assets/icon/dotsearch.svg`。与 @downloadURL 不同，这个文件**是源码、
+   * `assets/icon/dotsearch.svg`。与 @downloadURL 共用同一个 CDN 前缀；
+   * 这个文件**是源码、
    * 会随仓库提交**，所以推送后即可取到；深色底用的反白版是
    * `dotsearch-reverse.svg`（脚本管理器侧没有深色变体这个说法，故头部只用正版）。
    * Bing 版使用 `dotsearch-bing.svg`（绿点），Google 版使用
-   * `dotsearch-google.svg`（蓝点）；项目文档仍用红点主标识。
+   * `dotsearch-google.svg`（蓝点），百度版使用 `dotsearch-baidu.svg`
+   * （Logo 蓝）；项目文档仍用红点主标识。
    */
   icon: iconFor(),
   runAt: 'document-start',

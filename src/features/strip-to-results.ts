@@ -359,10 +359,17 @@ export const stripToResults: Feature = {
     // 隐藏结果的「单击展开」用事件委托，无需给每个条目单独绑定
     bindHiddenToggle(root);
 
-    // 补上依赖动态状态的一小段规则；主体样式由 Runner 统一注入
+    /*
+     * 补上依赖动态状态的一小段规则；主体样式由 Runner 统一注入。
+     *
+     * 根字号必须复位：百度把 html 的 font-size 设成 100px（rem 布局），
+     * 本套样式大量使用 rem，不复位会把标题、搜索框整体放大数倍。
+     * 用 !important 是因为原站规则可能晚于基础样式注入。
+     */
     const style = document.createElement('style');
     style.id = 'se-rewrite-style';
-    style.textContent = 'html.se-root-html { height: auto; }';
+    style.textContent =
+      'html.se-root-html { height: auto; font-size: 16px !important; }';
     document.head.appendChild(style);
 
     const after = document.body.querySelectorAll('*').length;
@@ -542,6 +549,8 @@ export function buildResultItems(
       const cite = document.createElement('cite');
       cite.className = 'se-cite';
       cite.textContent = result.displayUrl;
+      // 版面过窄时完整地址可能换行；title 保证鼠标悬停仍能看到全量
+      if (href) cite.title = href;
       body.appendChild(cite);
     }
 

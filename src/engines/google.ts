@@ -212,10 +212,32 @@ function readResult(node: HTMLElement, index: number): SearchResult | null {
     link,
     title: text(heading),
     snippet: text(node.querySelector('.VwiC3b, .lEBKkf, [data-sncf]')),
-    displayUrl: text(node.querySelector('cite, .VuuXrf, .qzEoUe')),
+    displayUrl: formatDisplayUrl(url, text(node.querySelector('cite, .VuuXrf, .qzEoUe'))),
     url,
     index,
   };
+}
+
+/**
+ * 来源行优先展示真实目标的完整 URL。
+ *
+ * Google 的 cite / VuuXrf 在不同版式下可能是站点名或只剩域名，
+ * 直接照抄会看起来「缺一截」。目标地址本身已经有完整路径，
+ * 这里只去掉查询串与 hash，避免把跟踪参数带进版面。
+ *
+ * 若跳转没能解码（目标仍是 google.com/url），回退到原站展示文本。
+ */
+function formatDisplayUrl(target: string, fallback: string): string {
+  try {
+    const url = new URL(target);
+    if (isGoogleHost(url.hostname) && url.pathname === '/url') {
+      return fallback || target;
+    }
+    const path = url.pathname === '/' ? '' : url.pathname;
+    return `${url.protocol}//${url.host}${path}`;
+  } catch {
+    return fallback || target;
+  }
 }
 
 /** 广告 / 推广位：既看祖先容器，也看结果自身的标记与跳转域名 */

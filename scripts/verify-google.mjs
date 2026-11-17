@@ -279,7 +279,12 @@ if (rewrote) {
       state.hrefs[2] === 'https://example.net/gamma',
     `${state.hrefs[0]} / ${state.hrefs[2]}`,
   );
-  check('展示 URL 来自 cite', state.cites.join('|') === 'example.com|example.org|example.net', state.cites.join('|'));
+  check(
+    '展示目标网站完整链接（不照抄被截断的 cite）',
+    state.cites.join('|') ===
+      'https://example.com/alpha|https://example.org/beta|https://example.net/gamma',
+    state.cites.join('|'),
+  );
   check(
     '页头统计只报已加载条数',
     state.stat === '找到 3 条结果',

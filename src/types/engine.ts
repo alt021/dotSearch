@@ -13,7 +13,12 @@ export interface SearchResult {
   title: string;
   /** 摘要文本 */
   snippet: string;
-  /** 引擎展示用的可读来源 URL（便于展示，不用于跳转） */
+  /**
+   * 来源行展示文本（不用于跳转）。
+   *
+   * Google / 百度由目标 URL 生成完整可读地址；不要直接照抄原站 cite /
+   * 站名，它们可能只给域名、站点名或被截断。
+   */
   displayUrl: string;
   /** 解析后的真实目标地址；解析失败时回退为原始 href */
   url: string | null;
@@ -53,6 +58,14 @@ export interface EngineAdapter {
   readonly theme: { readonly accent: string; readonly accentDark: string };
   /** 该引擎搜索结果页的主机名（用于日志与调试） */
   readonly hostnames: readonly string[];
+
+  /**
+   * 页头菜单按钮直接打开「附加设置」，不渲染下拉菜单。
+   *
+   * 用于没有账户 / Rewards / 站内搜索设置等入口的引擎（目前是百度）：
+   * 此时 popup 里只剩「附加设置」一项，多一层点击没有意义。
+   */
+  readonly directSettingsMenu?: boolean;
 
   /** 当前 URL 是否是该引擎的搜索结果页 */
   isSearchPage(url: URL): boolean;
@@ -107,6 +120,15 @@ export interface EngineAdapter {
   /* ---------------------------------------------------------------------
    * 以下为**可选**的引擎专有能力。未实现时相关 UI 自动跳过。
    * ------------------------------------------------------------------- */
+
+  /**
+   * 首页钩子。返回 true 表示**本页已被适配器接管**，Runner 不再启动。
+   *
+   * 百度首页的首次搜索会走 AJAX 热加载、不刷新页面；脚本又只在
+   * `/s` 上注入，于是首搜结果页没有增强。适配器在这里提前拦截提交，
+   * 强制整页跳到 `/s?wd=…`，Runner 随后在结果页正常启动。
+   */
+  onHomePage?(url: URL): boolean;
 
   /**
    * 采集当前页面的账户会话状态。

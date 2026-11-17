@@ -56,7 +56,7 @@ const targetEngine: EngineAdapter | undefined = activeEngines.find((e) => e.id =
 
 if (!targetEngine) {
   log.warn(`本产物面向的引擎「${targetId}」未注册，脚本不启动。`);
-} else {
+} else if (!targetEngine.onHomePage?.(new URL(location.href))) {
   /*
    * 抢在东方永页机初始化之前置位它的单例标记。
    *

@@ -65,7 +65,7 @@ export const pagetualGuard: Feature = {
    * 只在本脚本自己接管拼页的引擎上启用：
    * 其它引擎若把永页机赶走就等于连翻页都没了。
    */
-  engines: ['bing', 'google'],
+  engines: ['bing', 'google', 'baidu'],
 
   supports() {
     return true;

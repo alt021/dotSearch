@@ -1,6 +1,8 @@
 # 依赖与构建产物
 node_modules/
-dist/
+# 正式产物入库，供 jsDelivr 直接分发；dist/dev 仍属临时产物
+dist/*
+!dist/*.user.js
 .build/
 
 # 本地工作区数据（对话记忆、临时快照等），不随仓库分发

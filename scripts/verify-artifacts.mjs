@@ -51,7 +51,8 @@ for (const engine of engines) {
   check('脚本图标对应本引擎', head.includes(`// @icon         ${meta.iconFor(engine)}`));
   const iconFile = build.iconFile ?? 'dotsearch.svg';
   const icon = await readFile(join(root, 'assets', 'icon', iconFile), 'utf8');
-  const dotColor = { bing: '#008373', google: '#4285F4' }[engine] ?? '#E30613';
+  const dotColor =
+    { bing: '#008373', google: '#4285F4', baidu: '#2529D8' }[engine] ?? '#E30613';
   check('图标色点为本引擎强调色', icon.includes(`fill="${dotColor}"`));
   check('头部闭合', src.includes('// ==/UserScript=='));
   /*

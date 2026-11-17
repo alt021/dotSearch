@@ -39,7 +39,18 @@ console.log(`=== 发布核验：${artifact} ===`);
 /* ---- 版本与元信息 ---- */
 check('版本与 package.json 一致', head.includes(`@version      ${pkg.version}`), pkg.version);
 check('非开发版（名称无 Dev 后缀）', !/\(Dev\)/.test(head));
-check('更新地址为正式地址', /raw\.githubusercontent\.com/.test(head) && !/127\.0\.0\.1/.test(head));
+check(
+  '更新地址走 jsDelivr',
+  head.includes('https://cdn.jsdelivr.net/gh/alt021/dotSearch@main') &&
+    !/raw\.githubusercontent/.test(head) &&
+    !/127\.0\.0\.1/.test(head),
+);
+check(
+  '脚本图标走 jsDelivr',
+  /\/\/ @icon\s+https:\/\/cdn\.jsdelivr\.net\/gh\/alt021\/dotSearch@main\/assets\/icon\//.test(
+    head,
+  ),
+);
 check('未残留本地服务地址', !src.includes('127.0.0.1:8777'));
 
 /* ---- 权限 ---- */
@@ -70,6 +81,15 @@ if (engine === 'bing') {
   check(
     '注入 Google 地区域名',
     /google\.com\/search\*/.test(head) && /@include\s+\/\^https/.test(head),
+  );
+} else if (engine === 'baidu') {
+  check(
+    '注入百度搜索页',
+    /baidu\.com\/s\*/.test(head) && head.includes('www.baidu.com/s*'),
+  );
+  check(
+    '注入百度首页',
+    /@include\s+\/\^https/.test(head) && head.includes('index\\.html'),
   );
 }
 
@@ -105,6 +125,8 @@ if (engine === 'bing') {
     ['Google 搜索设置入口', '/preferences'],
     ['Google 分页参数 start', 'param: "start"'],
   );
+} else if (engine === 'baidu') {
+  features.push(['百度分页参数 pn', 'param: "pn"']);
 }
 
 /*
@@ -140,7 +162,12 @@ const theme =
           own: ['#4285f4', '#8ab4f8'],
           foreign: ['#008373', '#2ec4a6', '#e30613', '#ff2a34'],
         }
-      : null;
+      : engine === 'baidu'
+        ? {
+            own: ['#2529d8', '#7d83ff'],
+            foreign: ['#008373', '#2ec4a6', '#4285f4', '#8ab4f8', '#e30613', '#ff2a34'],
+          }
+        : null;
 if (theme) {
   check(
     '强调色是本引擎品牌色',
@@ -175,6 +202,13 @@ if (engine === 'google') {
     !/\.b_vPanel|#settings_suggestions|#newwnd|#newsnt/.test(src),
   );
   check('未混入百度适配器', !src.includes('www.baidu.com/s'));
+} else if (engine === 'baidu') {
+  check('未混入 Google 适配器', !src.includes('www.google.com/search'));
+  check('未混入 Bing 适配器', !src.includes('www.bing.com/search'));
+  check(
+    '不含必应账户 / Rewards',
+    !/rewards\.bing\.com|account\.microsoft\.com|readTopBarSession/.test(src),
+  );
 } else {
   check('未混入 Google 适配器', !src.includes('www.google.com/search'));
   check('未混入百度适配器', !src.includes('www.baidu.com/s'));

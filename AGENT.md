@@ -5,17 +5,21 @@
 不是给原站打补丁，而是把结果页整个换掉：用统一结构重建结果列表，
 再在此之上做完整的视觉风格化。
 
-- **已支持引擎**：Bing、Google（各自独立产物）。Bing 的搜索前端有多个**等价**入口：
+- **已支持引擎**：Bing、Google、百度（各自独立产物）。Bing 的搜索前端有多个**等价**入口：
   `www` / `cn` / `www2` / `www4` …（必应按 IP 分流，同一个域名在不同
   网络下给出中国版或全球版；备用子域也随可用性增删）。
   脚本用 `*.bing.com` 通配注入，站点识别走**后缀判定**，新增别名无需改代码。
   Google 按国家/地区分布到 `google.com.hk` / `google.co.jp` / `google.de` …，
   用正则 `@include` + 后缀判定覆盖；只接管网页搜索，不碰图片/视频/新闻。
-- **预留扩展**：百度（适配器骨架仍在，尚未接入调度）
+  百度只接管 `www.baidu.com/s`（含裸域 `/s`），只收 `.result` 自然结果，
+  不把 `.result-op` 的百科 / AI / 资讯富卡片混进普通列表。
 - **构建**：TypeScript → esbuild → **每个引擎一个独立产物**
-  （`dist/dotSearch-bing.user.js` / `dist/dotSearch-google.user.js`）。
-  一份源码、按 `--engine=<id>` 分别产出，各引擎的 `@match` 与脚本体名互不干扰；
-  构建期条件会把其它引擎的适配器裁掉，Google 产物里不会出现 Bing 的账户判据。
+  （`dist/dotSearch-bing.user.js` / `dist/dotSearch-google.user.js` /
+  `dist/dotSearch-baidu.user.js`）。一份源码、按 `--engine=<id>` 分别产出，
+  各引擎的 `@match` 与脚本体名互不干扰；构建期条件会把其它引擎的适配器裁掉。
+
+> **文档约定**：未经用户明确要求，**不要修改 README**。
+> 开发记录、决策、校准信息与验证结论统一写入 `AGENT.md`。
 
 ---
 
@@ -27,19 +31,22 @@ npm run watch       # 监听 src/ 变更，自动重建（开发版）
 npm run serve       # 起本地服务，供 Tampermonkey 以 URL 安装
 npm run build       # 单次构建（正式版，默认 bing）
 npm run build:google # 构建 Google 正式产物
+npm run build:baidu # 构建百度正式产物
 npm run build:all   # 构建全部已启用引擎的产物
 npm run check       # 仅做 TypeScript 类型检查
 npm run verify      # 类型检查 + 构建
 npm run verify:google # Google 离线适配器 + 结果页 + 拼页验证
+npm run verify:baidu # 百度离线适配器 + 结果页 + 设置菜单 + 拼页验证
 npm run sample:google # 网络可用时抓取真实 Google 页面（可换地区域名 / 代理）
-npm run release:all # 两个产物分别做发版前检查
+npm run release:all # 三个产物分别做发版前检查
 ```
 
-构建产物已进 `.gitignore`，属于生成物：
+正式产物 `dist/*.user.js` **纳入版本控制**，供 jsDelivr 直接分发；
+`dist/dev/` 仍由 `.gitignore` 排除，属于临时开发产物：
 
 | 命令 | 产物 | 用途 |
 | --- | --- | --- |
-| `npm run build` | `dist/dotSearch-bing.user.js` | 正式版，`@updateURL` 指向仓库地址 |
+| `npm run build` | `dist/dotSearch-bing.user.js` | 正式版，`@updateURL` 指向 jsDelivr |
 | `npm run watch` | `dist/dev/dotSearch-bing.user.js` | 开发版，`@updateURL` 指向本机服务 |
 
 > 产物名由 `src/meta.ts` 的 `ENGINE_BUILDS[engine].slug` 决定，
@@ -97,16 +104,15 @@ npm run watch
 
 ### 方式 C：正式发布后自动更新
 
-`meta.ts` 里正式版的 `@updateURL` / `@downloadURL` 指向
-`raw.githubusercontent.com/alt021/dotSearch/main/dist/dotSearch-bing.user.js`。
+`meta.ts` 里正式版的 `@updateURL` / `@downloadURL` 与 `@icon` 统一指向
+jsDelivr 公共 CDN：`https://cdn.jsdelivr.net/gh/alt021/dotSearch@main/...`。
+图标来自已提交的 `assets/icon/`，推送后即可生效；更新地址指向 `dist/`。
 配好之后，Tampermonkey 会自动检查并升级，用户侧只需打开那个 URL 首次安装。
 
-> **注意**：仓库当前**不提交 `dist/`**（它属于生成物，见上表）。
-> 因此上面那个地址目前取不到文件，方式 C 要等下面任一件事做完才可用：
->
-> - 加一个 CI（如 GitHub Actions）在推送时构建并发布产物；
-> - 或改主意把 `dist/dotSearch-bing.user.js` 纳入版本控制；
-> - 或把构建产物挂到 Release，让 `@updateURL` 指向 Release 资产地址。
+> **注意**：正式产物 `dist/*.user.js` 已入库，推送后 jsDelivr 即可取到；
+> `dist/dev/` 不入库。发版前必须跑 `npm run release:all`，让入库产物与
+> 当前源码、版本号一致。jsDelivr 对 `@main` 有缓存，刚推送后可能短暂
+> 返回旧文件或 404，必要时用带版本的查询串刷新。
 
 ---
 
@@ -260,7 +266,7 @@ src/
 │   ├── index.ts             引擎注册表（按 __SE_TARGET_ENGINE__ 裁剪）
 │   ├── bing.ts              ✅ 已接入（含账户入口、设置页折叠清单）
 │   ├── google.ts            ✅ 已接入（地区域名、start= 拼页、无账户钩子）
-│   └── baidu.ts             ⏸ 预留
+│   └── baidu.ts             ✅ 已接入（pn= 拼页、菜单直开设置、无账户钩子）
 ├── features/
 │   ├── index.ts             功能注册表（顺序即执行顺序）
 │   ├── strip-to-results.ts  结果页重写：重建页面 + 保留隐藏数据源 + 页码状态 + 序号
@@ -288,6 +294,7 @@ scripts/
 ├── verify-responsive.mjs     桌面版式验证（不同窗口宽度下布局一致）
 ├── verify-pagination.mjs     拼页状态：按钮就位、序号随 first= 连续
 ├── verify-google.mjs         Google：适配器纯逻辑 + 离线 SERP + start= 拼页
+├── verify-baidu.mjs          百度：适配器纯逻辑 + 离线 SERP + 设置菜单 + pn= 拼页
 ├── verify-session.mjs        账户会话检测（桌面顶栏）
 ├── verify-settings.mjs       附加设置与设置页折叠验证
 ├── verify-sanitize.mjs       链接净化单测
@@ -302,6 +309,8 @@ assets/icon/                  标识与各引擎变体（唯一来源，README �
 ├── dotsearch-bing-reverse.svg    Bing 反白版：#FFF + #2EC4A6
 ├── dotsearch-google.svg      Google 产物：#111 + #4285F4 蓝点
 ├── dotsearch-google-reverse.svg  Google 反白版：#FFF + #8AB4F8
+├── dotsearch-baidu.svg       百度产物：#111 + #2529D8 Logo 蓝
+├── dotsearch-baidu-reverse.svg   百度反白版：#FFF + #7D83FF
 ├── lockup.svg                项目主标识 + 字标（README 页头，红点红 Search）
 ├── lockup-dark.svg           同上，反白（#FF2A34）
 └── preview.html              标识规格页（红点主标识；正/反、尺寸阶梯、构造取值、色值）
@@ -333,12 +342,11 @@ assets/icon/                  标识与各引擎变体（唯一来源，README �
 README 的页头都指向那里的文件，改图标只换文件，不动代码。
 
 - `ENGINE_BUILDS[id].iconFile` 决定该引擎的 `@icon`，由 `iconFor()` 派生
-  （与 `@downloadURL` 同一个 `RAW` 前缀常量）。Bing 版用绿点图标，
-  Google 版用蓝点图标；**项目文档与 README 始终使用红点主标识**，
-  不要因为产物换色而把文档里的 lockup / preview 一并改色。
-- ⚠️ **与 `@downloadURL` 不同的是它现在就能生效**：`dist/` 是生成物、不提交，
-  那个地址要等 CI 或 Release 才通；而 `assets/` 是**源码、会随仓库提交**，
-  所以 `@icon` 推送后即可取到 —— 这是图标没有走 `dist/` 的原因。
+  （与 `@downloadURL` 同一个 `CDN` 前缀常量）。Bing 版用绿点图标，
+  Google 版用 Google 蓝，百度版用百度 Logo 蓝；**项目文档与 README
+  始终使用红点主标识**，不要因为产物换色而把文档里的 lockup / preview 一并改色。
+- `assets/` 与正式产物 `dist/*.user.js` 都会随仓库提交，因此 `@icon`
+  与 `@downloadURL` 推送后都能被 jsDelivr 取到；`dist/dev/` 不提交。
 - ⚠️ **无底板 + 只有黑与强调色的代价：纯黑在深色底上会消失。** 处理办法是每个标识
   配一份反白版（黑→白、强调色→深色提亮值），README 用
   `<picture>` + `prefers-color-scheme` 自动切换。
@@ -358,7 +366,7 @@ README 的页头都指向那里的文件，改图标只换文件，不动代码�
 
 小尺寸的判据只有一条：**红点在 16px 下必须是能看见的色块**。
 初版 `r=3.75` 在浏览器标签页里缩成一个红点，才加到 `4.4`。
-几何对所有引擎变体一致，只替换点色（Bing 绿 / Google 蓝）。
+几何对所有引擎变体一致，只替换点色（Bing 绿 / Google 蓝 / 百度 Logo 蓝）。
 
 ### 引擎适配（`EngineAdapter`）
 
@@ -435,7 +443,7 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
 
 ---
 
-## 接入新引擎 / Google 的特殊点
+## 接入新引擎 / 各引擎特殊点
 
 新增引擎的步骤：
 
@@ -445,14 +453,22 @@ Bing / Google / 百度换词都不刷新整页，只改 URL 和部分 DOM。因�
    再把引擎 id 加进 `load-more.ts` 与 `pagetual-guard.ts` 的 `engines`。
 3. 实测校正选择器——**这是最容易出错的一步**，务必在真实结果页上验证。
 
+来源行展示：
+
+- Google / 百度不要直接照抄原站的 cite / 站名 —— 前者可能只有域名或被截断，
+  后者可能只给「CSDN博客」这类站名。优先用结构化结果的**目标 URL** 生成
+  完整可读地址（协议 + 主机 + 路径，去掉 query / hash），并在 cite 上写
+  `title`，保证窄版式换行时仍可查看全量。
+- 若目标仍是引擎自己的跳转（Google `/url`、百度 `/link`），才回退到原站展示文本。
+
 Google 额外注意：
 
 - 地区域名不能用 `@match` 穷举（不允许 `google.*` 这种中间通配），
   所以在 `ENGINE_BUILDS.google.includes` 里放正则 `@include`，
   适配器内部再用 `GOOGLE_HOST_RE` 做后缀判定。
 - 只接管网页搜索：`isSearchPage` 排除 `tbm=` 与 `udm=` 的非网页垂直搜索。
-- 分页是 `start=`（0 起），Bing 是 `first=`（1 起）；两者共用
-  `PaginationConfig`，不要在 `strip-to-results` 里写死参数名。
+- 分页是 `start=`（0 起），Bing 是 `first=`（1 起），百度是 `pn=`（0 起）；
+  三者共用 `PaginationConfig`，不要在 `strip-to-results` 里写死参数名。
 - Google 版**不实现** `captureSession` / `getAccountEntry` / `isSettingsPage` /
   `getSupersededSettings`：不提供账户状态检测、Rewards 或设置页折叠。
   菜单只剩「附加设置」与「搜索设置」（指向当前地区域的 `/preferences`）。
@@ -460,6 +476,25 @@ Google 额外注意：
   它覆盖 `<地区域>/search`、`/url?q=` 解码、广告剔除、`start=10` 拼页与负例。
   本机共享代理访问 Google 会触发 `/sorry/index`（HTTP 429），所以没有把
   Google 实时验证纳入默认门禁；网络可用时用 `npm run sample:google` 抓真实页面校准。
+
+百度额外注意：
+
+- 首页首次搜索必须强制整页跳转。百度首页的可见搜索框现在是 AI 输入框
+  `#chat-textarea`（经典 `#kw` 是隐藏的虚拟表单），并会走 AJAX 热加载；
+  脚本在 `onHomePage` 里用 document 捕获阶段拦截回车、提交和
+  `#chat-submit-button` 点击，`location.assign` 到 `/s?wd=…`。
+  不拦截的话，首次搜索不刷新文档，脚本没有注入机会。
+- 只取 `#content_left .result` 自然结果；`.result-op` 是百科 / AI 直答 / 资讯
+  等富卡片，结构与普通结果不同，不混入列表。
+- 真实目标地址优先读结果节点的 `mu` 属性（通常已是目标站地址），缺失时才回退
+  标题链接；展示来源优先 `.cosc-source-text`。
+- 百度把 `html` 的 `font-size` 设成 `100px` 做 rem 布局。重写完成后
+  `strip-to-results` 会把 `html.se-root-html` 复位到 `16px !important`；
+  删掉这条规则会让整套 rem 尺寸放大数倍。
+- `directSettingsMenu: true`：菜单按钮直接打开「附加设置」，不渲染 popup。
+  不实现账户、Rewards、站内搜索设置等其余入口。
+- 验证：`npm run verify:baidu` 用路由拦截伪造 SERP，覆盖自然结果提取、广告 /
+  富卡片剔除、菜单直开设置、`pn=10` 拼页与负例。
 
 ---
 
@@ -479,11 +514,12 @@ Google 额外注意：
 | `npm run verify:responsive` | 桌面版式：不同窗口宽度下布局一致，SHOW MORE 始终就位 |
 | `npm run verify:pagination` | 拼页状态：旧页码栏已移除，序号随 `first=` 连续 |
 | `npm run verify:google` | Google 离线验证：地区域名、网页搜索识别、SERP 重写、`start=` 拼页、无账户入口 |
+| `npm run verify:baidu` | 百度离线验证：首页首搜整页跳转、自然结果提取、菜单直开附加设置、`pn=` 拼页、根字号复位 |
 | `npm run verify:session` | 账户会话检测（桌面顶栏） |
 | `npm run verify:settings` | 附加设置面板与设置页折叠 |
 | `npm run verify:sanitize` | 链接净化单测（不起浏览器） |
-| `npm run verify:artifacts` / `release:bing` / `release:google` | 按引擎的产物自检与发版前检查 |
-| `npm run verify:all` | 两个引擎的离线验证 + 实时 Bing document-start |
+| `npm run verify:artifacts` / `release:bing` / `release:google` / `release:baidu` | 按引擎的产物自检与发版前检查 |
+| `npm run verify:all` | 三个引擎的离线验证 + 实时 Bing document-start |
 
 三条经验值得记住：
 
@@ -628,7 +664,7 @@ badge 标签位置与结果完好性、hide 保留序号与灰字占位、
 | --- | --- |
 | 网格 | 左栏等宽序号（01/02…）+ 右栏内容， 强列对齐 |
 | 字体 | Helvetica 系无衬线；序号与来源 URL 用等宽字体区分层级 |
-| 色彩 | 纯黑白 + 唯一引擎强调色：Bing 旧标绿 `#008373` / Google 蓝 `#4285F4`，全站仅此一色 |
+| 色彩 | 纯黑白 + 唯一引擎强调色：Bing 旧标绿 `#008373` / Google 蓝 `#4285F4` / 百度 Logo 蓝 `#2529D8`，全站仅此一色 |
 | 分隔 | 细规则线切割条目，**不用卡片阴影** |
 | 留白 | 大间距是版面组成，不是浪费 |
 | 拒绝 | 无圆角、无阴影、无渐变、无悬浮抬升 |
@@ -637,7 +673,7 @@ DOM 结构相应调整：新增 `se-num` 序号栏、`se-body` 内容栏、`se-m
 （品牌方块 + 查询词大字 + 结果计数，以 3px 粗规则线收束）；来源 URL 移至标题之上，
 即瑞士风格典型的元信息前置手法。
 
-**深色模式**：跟随系统 `prefers-color-scheme`，深色下强调色提亮（Bing `#2ec4a6` / Google `#8ab4f8`）保证对比度。
+**深色模式**：跟随系统 `prefers-color-scheme`，深色下强调色提亮（Bing `#2ec4a6` / Google `#8ab4f8` / 百度 `#7d83ff`）保证对比度。
 两种模式均已截图实测。
 
 验证：

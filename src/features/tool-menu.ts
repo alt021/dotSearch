@@ -87,6 +87,18 @@ export const toolMenu: Feature = {
     // 幂等：已挂载则不重复插入
     if (slot.querySelector(`.${MENU_BUTTON_CLASS}`)) return;
 
+    /*
+     * 百度版没有账户 / Rewards / 搜索设置等条目，
+     * popup 里只会剩「附加设置」一项。直接把按钮接到设置面板，
+     * 不再为单项菜单多做一层展开与收起。
+     */
+    if (engine.directSettingsMenu) {
+      slot.append(buildDirectSettingsButton(engine));
+      cleanups = [];
+      log.info('页头设置按钮已挂载');
+      return;
+    }
+
     const { button, popup } = buildMenu(engine);
     slot.append(button, popup);
 
@@ -103,6 +115,25 @@ export const toolMenu: Feature = {
     document.getElementById(POPUP_ID)?.remove();
   },
 };
+
+/**
+ * 直连「附加设置」的菜单按钮。
+ *
+ * 视觉上仍是页头右上角的「菜单」，但点击不展开 popup，
+ * 而是直接打开设置弹窗。保留同一个 MENU_BUTTON_CLASS，
+ * 页头布局与验证脚本都不必为百度单独分支。
+ */
+function buildDirectSettingsButton(engine: EngineAdapter): HTMLButtonElement {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = `${MENU_BUTTON_CLASS} se-menu-btn-settings`;
+  button.textContent = '菜单';
+  button.title = '附加设置';
+  button.setAttribute('aria-haspopup', 'dialog');
+  button.setAttribute('aria-label', '打开附加设置');
+  button.addEventListener('click', () => openSettingsPanel({ engine }));
+  return button;
+}
 
 /** 构建「菜单」按钮与弹出面板 */
 function buildMenu(engine: EngineAdapter): { button: HTMLButtonElement; popup: HTMLElement } {
